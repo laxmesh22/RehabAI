@@ -45,7 +45,12 @@ def render_rgb(landmarks2d, highlight_side='right', source='simulation', angle=N
 
 
 def overlay_banner(source, imu_source=None):
-    cam = 'SYNTHETIC RGB-D' if source == 'simulation' else 'LIVE RGB-D'
+    if source == 'simulation':
+        cam = 'SYNTHETIC RGB-D'
+    elif source == 'phone':
+        cam = 'PHONE RGB'
+    else:
+        cam = 'LIVE RGB-D'
     if imu_source == 'simulation':
         imu = ' + ARM IMU'
         note = ' · NOT LIVE SENSORS'
@@ -54,7 +59,12 @@ def overlay_banner(source, imu_source=None):
         note = ' · UNVALIDATED'
     else:
         imu = ''
-        note = ' · NOT A CAMERA' if source == 'simulation' else ' · POSE OVERLAY'
+        if source == 'simulation':
+            note = ' · NOT A CAMERA'
+        elif source == 'phone':
+            note = ' · NO DEPTH · UNVALIDATED'
+        else:
+            note = ' · POSE OVERLAY'
     return cam + imu + note
 
 

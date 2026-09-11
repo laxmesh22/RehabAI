@@ -20,6 +20,22 @@ python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 
 Open **http://127.0.0.1:8000**
 
+## Patient registration, voice questionnaire, and exports
+
+The clinician workflow starts on **Patients → Register patient**. Identifiers are typed and visually confirmed. Starting an assessment then opens a six-question English/Hindi voice intake for pain and daily function. Every captured value requires confirmation; no answer is filled automatically.
+
+Sarvam Saaras, ElevenLabs, and Claude run from the FastAPI server so provider keys never enter browser JavaScript. Copy `.env.example` to `.env`, add newly rotated keys, then run `Start-RehabAI.ps1`. The launcher loads `.env` without printing it. `/api/health` reports the active speech and clarification providers without exposing credentials.
+
+After sign-in, tap **Talk** once. RehabAI keeps listening and answering until you tap again or say you are done. It cannot invent ROM or override a BLOCK.
+
+```powershell
+Copy-Item .env.example .env
+notepad .env
+.\Start-RehabAI.ps1
+```
+
+The patient profile has **Export JSON** and **Export Excel** actions. Both exports are access controlled, audit logged, and retain `simulation`, `live`, and `demo / synthetic` labels. See [the voice intake workflow](docs/VOICE_INTAKE_WORKFLOW.md) for the provider data boundary and failure behavior.
+
 Demo accounts (password `rehabai-demo`):
 
 | Role | Email |
@@ -34,16 +50,17 @@ Demo patient **Ananya Sharma (P102)** is labelled demo/synthetic. Baseline abduc
 ### Suggested live demo
 
 1. Sign in as Priya Mehta.
-2. Open Ananya Sharma.
+2. Open Ananya Sharma, or **Register patient** first.
 3. Start assessment.
-4. Wait until Pose and Distance read OK (Camera/Depth stay **Simulation**).
-5. Confirm tracking.
-6. Watch abduction climb on the split screen.
-7. Click **Lean sideways** — coaching should say to keep the trunk upright.
-8. Return to Normal, complete a repetition.
-9. Stop & save, enter a pain score.
-10. Open Progress, then ask the AI: `Compare this assessment with the previous session.`
-11. Generate a progress summary / open Reports.
+4. Complete and confirm the six pain/function questions (Speak or tap). Measurement is locked until this is done.
+5. Wait until Pose and Distance read OK (Camera/Depth stay **Simulation**).
+6. Confirm tracking.
+7. Watch abduction climb. The **3D guide** (lime arm) is what to copy; it is not the patient. Cues are spoken when they change.
+8. Click **Lean sideways** — coaching should say to keep the trunk upright, and the guide trunk stays vertical.
+9. Return to Normal, complete a repetition.
+10. Stop & save, enter pain after, then read the stored session recap.
+11. Open Progress, then ask the AI: `Compare this assessment with the previous session.`
+12. Export the patient record as JSON or Excel and open Reports.
 
 The original loopback patient station still works:
 
@@ -78,6 +95,36 @@ Arm IMU JSON at 100 Hz to UDP `127.0.0.1:8766` (or `REHABAI_IMU_TRANSPORT=serial
 
 Optional edge packages: `pip install -r requirements-edge.txt` after matching JetPack / RealSense / CUDA. Do not auto-download weights.
 
+### Phone RGB capture
+
+OpenCV is an image-processing library, not the trainable model. The phone sends short-lived JPEG frames; a MediaPipe or YOLO pose model runs either inside FastAPI or on the separate GPU pose service. Only normalized landmarks and session metrics are retained by default.
+
+Local model on the FastAPI host:
+
+```powershell
+$env:REHABAI_POSE_MODEL='C:\models\pose_landmarker.task'
+$env:REHABAI_POSE_KIND='mediapipe'
+.\Start-RehabAI.ps1 -Phone
+```
+
+Hosted model on the GPU server:
+
+```powershell
+# GPU server
+$env:REHABAI_POSE_MODEL='C:\models\best.pt'
+$env:REHABAI_POSE_KIND='yolo'
+$env:REHABAI_POSE_DEVICE='0'
+$env:REHABAI_PHONE_INFERENCE_API_KEY='use-a-random-internal-key'
+python -m uvicorn ml.pose_service:app --host 0.0.0.0 --port 8010
+
+# Hospital backend
+$env:REHABAI_PHONE_INFERENCE_URL='http://gpu-server:8010'
+$env:REHABAI_PHONE_INFERENCE_API_KEY='use-the-same-internal-key'
+.\Start-RehabAI.ps1 -Phone
+```
+
+Phone measurements are explicitly labelled `phone_rgb_2d`: there is no measured depth or distance. This stage supports frontal-plane abduction/elevation only. Train from an annotated, subject-disjoint dataset with `scripts/train_pose.py`; its output remains unvalidated until held-out evaluation and physical comparison against a reference measurement are completed.
+
 If the GPU/LLM server is down, ROM, reps, compensation and safety still run. Set `LLM_BASE_URL` only when a local OpenAI-compatible endpoint exists.
 
 ## Next.js console (optional)
@@ -100,13 +147,14 @@ These tests do **not** validate camera accuracy, Jetson latency, or clinical per
 
 ## Architecture
 
-RealSense → arm IMU → Jetson edge pipeline → FastAPI → SQLite (default) or PostgreSQL → clinician/patient studio + supervisor agent.
+RealSense + arm IMU → Jetson edge pipeline, or phone RGB → local/hosted pose model → FastAPI → SQLite (default) or PostgreSQL → clinician/patient studio + supervisor agent.
 
 See `docs/ARCHITECTURE.md` and `AGENT_HANDOFF.md`.
 
 ## Safety and clinical limits
 
 - Joint angles are deterministic vector geometry, not LLM output. Repetition counting uses camera ROM; the IMU contributes rate and quality, not a disease label.
+- The 3D coach uses Mixamo bones from telemetry. An optional LLM may rephrase the cue only. It cannot override BLOCK or set joint angles.
 - Safety ALLOW / WARN / PAUSE / BLOCK / CLINICIAN_REVIEW is deterministic. The agent cannot override BLOCK.
 - Invalid or low-confidence ROM is not used in progress analysis.
 - No automatic diagnosis of adhesive capsulitis.

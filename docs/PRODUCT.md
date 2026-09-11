@@ -13,7 +13,12 @@ It does:
 - flag torso compensation and camera/IMU disagreement
 - store a longitudinal record
 - let a physiotherapist review progress and approve AI drafts
+- show a Mixamo-rigged **guide avatar** the patient copies. Bones follow measured/session telemetry. The LLM does not pose the mesh and does not diagnose.
 
 The IMU path follows the same idea as Liu et al. (Sensors 2024) — wearable kinematics on the arm — but RehabAI **does not classify frozen shoulder vs healthy**. IMU features are quality metrics, not a diagnosis.
 
-Demo patient P102 is synthetic seed data for the judge walkthrough. Live hardware must be labelled live and must fail closed when the camera is absent. A live RealSense session never receives a simulated IMU.
+Demo patient P102 is synthetic seed data for the judge walkthrough. Dashboard and patient charts plot **stored ROM and pain points**, including sessions saved after a trial. Seed stays labelled demo/synthetic. Live hardware must be labelled live and must fail closed when the camera is absent. A live RealSense session never receives a simulated IMU.
+
+## Consumer Android APK
+
+A Capacitor patient shell (`mobile/`) reuses the same mint UI. Entry is Talk-first (`/?consumer=1#/app`): the voice agent asks the six pain/function questions, stores answers in `storage/patients/{id}/memory.json`, then opens a personal dashboard. **Start session** uses the existing OpenCV/pose pipeline. Without `REHABAI_POSE_MODEL`, phone frames are rejected and sessions stay labelled simulation. See [docs/CONSUMER_APK.md](CONSUMER_APK.md).

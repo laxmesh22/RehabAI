@@ -54,14 +54,19 @@ def persist_finished_session(db, session_row, patient, summary, history, finish_
                           exercise_id=session_row.exercise_id, reps_valid=session_row.reps,
                           reps_invalid=session_row.invalid_reps, peak=session_row.peak_angle,
                           compensation_count=len(summary['events'])))
-    db.add(PainScore(id=new_id('PAIN-'), patient_id=patient.id, session_id=session_row.id,
-                     rest=finish_body.pain_rest, movement=finish_body.pain_movement, context='session'))
+    rest_pain = finish_body.pain_rest if finish_body.pain_rest is not None else session_row.pain_before
+    movement_pain = finish_body.pain_after if finish_body.pain_after is not None else finish_body.pain_movement
+    if rest_pain is not None or movement_pain is not None:
+        db.add(PainScore(id=new_id('PAIN-'), patient_id=patient.id, session_id=session_row.id,
+                         rest=rest_pain, movement=movement_pain, context='session'))
     movement = _movement(session_row.exercise_id)
     valid_rom = session_row.coverage is not None and session_row.coverage >= 50 and (session_row.peak_angle or 0) > 0
+    wrote_rom = False
     if valid_rom:
         db.add(ROMMeasurement(id=new_id('ROM-'), patient_id=patient.id, session_id=session_row.id, movement=movement,
                               value=session_row.peak_angle, confidence=min(1.0, (session_row.coverage or 0) / 100),
                               valid=True, source=session_row.source, model_version=session_row.model_version))
+        wrote_rom = True
     for event in summary['events']:
         db.add(CompensationEvent(id=new_id('CE-'), patient_id=patient.id, session_id=session_row.id,
                                  type=event['type'], value=event['value'], threshold=event['threshold']))
@@ -91,7 +96,7 @@ def persist_finished_session(db, session_row, patient, summary, history, finish_
             notes=finish_body.notes, is_demo=session_row.is_demo, tracking_quality=session_row.coverage,
         )
         db.add(assessment)
-        if valid_rom:
+        if valid_rom and not wrote_rom:
             db.add(ROMMeasurement(id=new_id('ROM-'), patient_id=patient.id, assessment_id=assessment.id,
                                   movement=movement, value=session_row.peak_angle,
                                   confidence=min(1.0, (session_row.coverage or 0) / 100), valid=True,

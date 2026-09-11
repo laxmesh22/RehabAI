@@ -1,6 +1,8 @@
 import tempfile
 import time
 import unittest
+import io
+import zipfile
 from pathlib import Path
 from backend.database.session import rebind
 from backend.services.live_hub import HUB
@@ -48,6 +50,27 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(health['imu']['placements'], ['arm'])
         self.assertEqual(health['imu']['role'], 'kinematics_and_quality_not_diagnosis')
         self.assertFalse(health['imu']['live_available'])
+        self.assertEqual(health['guide']['driven_by'], 'telemetry_not_llm')
+        self.assertEqual(health['guide']['rig'], 'mixamo')
+        self.assertIn('voice', health)
+        self.assertIn(health['voice']['stt'], ('sarvam-saaras', 'elevenlabs-scribe', 'offline-windows-speech'))
+        self.assertIn(health['voice']['tts'], ('elevenlabs', 'sarvam-bulbul', 'browser-speech'))
+        self.assertIn('offline-windows-speech', health['voice']['stt_order'])
+        self.assertEqual(health['voice']['conversation'], 'continuous_until_end')
+        self.assertEqual(health['voice']['browser_use']['privacy'], 'no_dom_or_patient_identifiers_to_llm')
+
+    def test_dashboard_series_matches_stored_rom(self):
+        dash = self.client.get('/api/dashboard', headers=self.headers).json()
+        self.assertTrue(dash.get('focus_patient'))
+        self.assertTrue(dash.get('abduction_series'))
+        pid = dash['focus_patient']['id']
+        rom = self.client.get(f'/api/patients/{pid}/rom', headers=self.headers).json()
+        abd = [row['value'] for row in rom if row['movement'] == 'abduction']
+        self.assertEqual([row['value'] for row in dash['abduction_series']], abd)
+        self.assertEqual(dash['progress']['abduction']['baseline'], abd[0])
+        self.assertEqual(dash['progress']['abduction']['current'], abd[-1])
+        pain = self.client.get(f'/api/patients/{pid}/pain', headers=self.headers).json()
+        self.assertEqual(len(dash['pain_series']), len(pain))
 
     def test_patient_cannot_see_other_caseload_as_physio_demo_patient_exists(self):
         rows = self.client.get('/api/patients', headers=self.headers).json()
@@ -68,6 +91,27 @@ class PlatformTests(unittest.TestCase):
         token = self.client.post('/api/auth/login', json={'email': 'ananya.sharma@demo.local', 'password': 'rehabai-demo'}).json()['token']
         rows = self.client.get('/api/patients', headers={'Authorization': 'Bearer ' + token}).json()
         self.assertEqual([p['id'] for p in rows], ['P102'])
+
+    def test_patient_registration_and_exports(self):
+        mrn = 'MRN-VOICE-' + str(time.time_ns())
+        created = self.client.post('/api/patients', headers=self.headers, json={
+            'full_name': 'Voice Intake Test', 'mrn': mrn, 'date_of_birth': '1985-04-03',
+            'sex': 'Female', 'affected_side': 'left', 'clinician_diagnosis': '',
+        })
+        self.assertEqual(created.status_code, 200, created.text)
+        patient_id = created.json()['id']
+        json_export = self.client.get(f'/api/patients/{patient_id}/export.json', headers=self.headers)
+        self.assertEqual(json_export.status_code, 200, json_export.text)
+        payload = json_export.json()
+        self.assertEqual(payload['schema_version'], 'rehabai.patient-export.v1')
+        self.assertEqual(payload['patient']['mrn'], mrn)
+        self.assertIn('questionnaire_sessions', payload)
+        xlsx = self.client.get(f'/api/patients/{patient_id}/export.xlsx', headers=self.headers)
+        self.assertEqual(xlsx.status_code, 200, xlsx.text)
+        self.assertTrue(xlsx.content.startswith(b'PK'))
+        with zipfile.ZipFile(io.BytesIO(xlsx.content)) as archive:
+            self.assertIsNone(archive.testzip())
+            self.assertIn('xl/worksheets/sheet8.xml', archive.namelist())
 
     def test_admin_cannot_start_session(self):
         token = self.client.post('/api/auth/login', json={'email': 'admin@hospital.local', 'password': 'rehabai-demo'}).json()['token']
@@ -103,6 +147,8 @@ class PlatformTests(unittest.TestCase):
                 self.assertEqual(imu.get('source'), 'simulation')
                 self.assertTrue(imu.get('ok'))
                 self.assertEqual(cal.get('sensors', {}).get('imu'), 'simulation')
+                self.assertEqual(cal.get('guide', {}).get('driven_by'), 'telemetry_not_llm')
+                self.assertEqual(cal['guide']['guide_torso_deg'], 0)
                 break
             time.sleep(0.1)
         self.assertTrue(ready)
@@ -139,6 +185,8 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(finish.json()['session']['source'], 'simulation')
         self.assertGreaterEqual(finish.json()['session']['reps'], 1)
         self.assertIsNotNone(finish.json()['assessment_id'])
+        self.assertIn('peak', finish.json()['summary'])
+        self.assertEqual(finish.json()['summary']['source'], 'simulation')
         assessments = self.client.get('/api/patients/P102/assessments', headers=self.headers).json()
         latest = assessments[0]
         self.assertEqual(latest['pain_rest'], 3)
@@ -155,7 +203,16 @@ class PlatformTests(unittest.TestCase):
         self.assertTrue(metrics.json()[0]['payload']['summary']['imu']['enabled'])
         self.assertEqual(metrics.json()[0]['payload']['summary']['imu']['source'], 'simulation')
         progress = self.client.get('/api/patients/P102/progress', headers=self.headers).json()
+        rom = self.client.get('/api/patients/P102/rom', headers=self.headers).json()
+        abd = [row for row in rom if row['movement'] == 'abduction']
+        pain = self.client.get('/api/patients/P102/pain', headers=self.headers).json()
         self.assertEqual(progress['abduction']['baseline'], 72)
+        self.assertEqual(progress['abduction']['current'], abd[-1]['value'])
+        self.assertEqual(abd[-1]['value'], finish.json()['session']['peak_angle'])
+        self.assertEqual(pain[-1]['movement'], 4)
+        dash = self.client.get('/api/dashboard', headers=self.headers).json()
+        self.assertEqual(dash['progress']['abduction']['current'], progress['abduction']['current'])
+        self.assertEqual([row['value'] for row in dash['abduction_series']], [row['value'] for row in abd])
 
     def test_assessment_finish_without_intake_is_rejected(self):
         start = self.client.post('/api/sessions', headers=self.headers, json={
@@ -172,6 +229,52 @@ class PlatformTests(unittest.TestCase):
         })
         self.assertEqual(finish.status_code, 400, finish.text)
         self.assertIn('intake', finish.json()['detail'].lower())
+
+    def test_guide_caption_stays_deterministic_without_llm(self):
+        res = self.client.post('/api/guide/caption', headers=self.headers, json={
+            'cue': 'Raise your arm slowly.', 'phase': 'ascending', 'safety': 'ALLOW', 'movement': 'abduction',
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual(res.json()['caption'], 'Raise your arm slowly.')
+        self.assertFalse(res.json()['llm_used'])
+        self.assertFalse(res.json()['bones_from_llm'])
+
+    def test_voice_agent_strips_identity_and_honours_block(self):
+        import json
+        blocked = self.client.post('/api/voice/agent', headers=self.headers, data={
+            'text': 'keep going',
+            'language': 'en-IN',
+            'speak': '0',
+            'context': json.dumps({'scene': 'measure', 'safety': 'BLOCK', 'patient_id': 'P102', 'mrn': 'secret'}),
+        })
+        self.assertEqual(blocked.status_code, 200, blocked.text)
+        body = blocked.json()
+        self.assertEqual(body['action'], 'pause')
+        self.assertIn('stop', body['spoken'].lower())
+        self.assertNotIn('P102', body['spoken'])
+        self.assertIsNone(body.get('audio_base64'))
+        self.assertEqual(body.get('tts_engine'), 'browser-speech')
+
+        scored = self.client.post('/api/voice/agent', headers=self.headers, data={
+            'text': 'four',
+            'language': 'en-IN',
+            'speak': '0',
+            'context': json.dumps({'scene': 'intake', 'intake_field': 'pain_rest'}),
+        })
+        self.assertEqual(scored.status_code, 200, scored.text)
+        parsed = scored.json()['parsed']
+        self.assertEqual(parsed['parsed_value'], 4)
+        self.assertEqual(parsed['engine'], 'deterministic')
+        self.assertEqual(parsed['intent'], 'number')
+
+        ended = self.client.post('/api/voice/agent', headers=self.headers, data={
+            'text': 'goodbye that is all',
+            'language': 'en-IN',
+            'speak': '0',
+            'context': json.dumps({'scene': 'clinic'}),
+        })
+        self.assertEqual(ended.status_code, 200, ended.text)
+        self.assertEqual(ended.json()['action'], 'end')
 
     def tearDown(self):
         for sid in list(HUB.sessions):

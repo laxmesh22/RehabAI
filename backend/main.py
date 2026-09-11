@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse
 from backend.config import HOST, PORT
-from backend.database.session import init_db, SessionLocal
+from backend.database.session import init_db
 from backend.seed import seed_if_empty
 from backend.routers import router
 
@@ -18,6 +18,7 @@ DIST = ROOT / 'dist'
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from backend.database.session import SessionLocal, init_db
     init_db()
     db = SessionLocal()
     try:
@@ -31,8 +32,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title='RehabAI', version='0.2.0',
               description='AI-assisted shoulder rehabilitation platform (prototype)',
               lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=['http://127.0.0.1:3000', 'http://localhost:3000',
-                                                 'http://127.0.0.1:8000', 'http://localhost:8000'],
+app.add_middleware(CORSMiddleware, allow_origins=[
+    'http://127.0.0.1:3000', 'http://localhost:3000',
+    'http://127.0.0.1:8000', 'http://localhost:8000',
+    'http://10.0.2.2:8000',
+    'capacitor://localhost', 'https://localhost', 'http://localhost',
+],
+                   allow_origin_regex=r'https://.*\.up\.railway\.app|https://.*\.railway\.app|capacitor://localhost|http://localhost',
                    allow_credentials=True, allow_methods=['*'], allow_headers=['*'])
 app.include_router(router, prefix='/api')
 

@@ -1,6 +1,7 @@
+import base64
+import json
 import uuid
-from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func
@@ -9,8 +10,8 @@ from sqlalchemy.orm.attributes import flag_modified
 from backend.access import can_treat, can_view_patient, load_patient
 from backend.auth import create_token, current_user, hash_password, new_id, require_roles, verify_password, decode_token
 from backend.config import (
-    DATABASE_URL, DEMO_PASSWORD, IMU_PLACEMENTS, IMU_REQUIRED, IMU_SERIAL, IMU_TRANSPORT,
-    LLM_BASE_URL, MEASUREMENT_SOURCE,
+    DATABASE_URL, IMU_PLACEMENTS, IMU_REQUIRED, IMU_SERIAL, IMU_TRANSPORT, JWT_SECRET_IS_DEFAULT,
+    LLM_BASE_URL, MEASUREMENT_SOURCE, PHONE_FRAME_MAX_BYTES, POSE_MODEL, VOICE_STT,
 )
 from backend.database.models import (
     AIReport, Alert, Appointment, Assessment, AuditLog, ClinicalNote, CompensationEvent,
@@ -18,11 +19,12 @@ from backend.database.models import (
     Session as RehabSession, SessionMetric, User, utcnow,
 )
 from backend.database.session import get_db
-from backend.services.live_hub import HUB
+from backend.services.live_hub import HUB, PhoneFrameRateLimit
 from backend.services.persist import persist_finished_session
 from edge.imu.device import describe_imu
 from edge.overlay import opencv_available
 from agent.orchestrator import run_supervisor
+from agent.guide_caption import caption_guide
 from agent.tools.clinical import (
     calculate_patient_progress, get_approved_exercise_library, get_pain_history, get_rom_history,
     get_compensation_events, get_session_history,
@@ -30,8 +32,17 @@ from agent.tools.clinical import (
 from edge.exercises.library import get_exercise
 from backend.intake import (
     INTAKE_FIELDS, apply_confirmed_value, empty_intake, merge_finish_intake,
-    missing_intake_fields, parse_utterance, script_payload,
+    missing_intake_fields, script_payload,
 )
+from backend.voice import (
+    VoiceProviderError, parse_questionnaire_reply, synthesize_speech, transcribe_audio, voice_status,
+)
+from agent.live_voice import live_reply, sanitize_context
+from agent.consumer_voice import consumer_reply, greeting_prompt
+from backend.memory import load_memory, merge_session_into_memory, save_memory
+from agent.retrieval import patient_memory_for_agent
+from edge.phone_capture import phone_pose_available
+from backend.exports import build_patient_record, patient_record_json, patient_record_xlsx
 
 router = APIRouter()
 
@@ -78,12 +89,19 @@ class SessionStartBody(BaseModel):
     pain_before: int | None = Field(default=None, ge=0, le=10)
     consent_recording: bool = False
     kind: str = 'rehab'
+    capture: str = 'auto'  # auto | simulation | phone
 
 
 class IntakeParseBody(BaseModel):
     field: str
     text: str
     awaiting_confirm: bool = False
+    language: str = 'en-IN'
+
+
+class VoiceSpeakBody(BaseModel):
+    text: str = Field(min_length=1, max_length=600)
+    language: str = 'en-IN'
 
 
 class SessionIntakeBody(BaseModel):
@@ -133,6 +151,13 @@ class StaffBody(BaseModel):
     password: str
 
 
+class GuideCaptionBody(BaseModel):
+    cue: str = ''
+    phase: str | None = None
+    safety: str | None = None
+    movement: str | None = None
+
+
 def audit(db, user, action, resource, resource_id, detail=None):
     db.add(AuditLog(id=new_id('AUD-'), actor_id=None if user is None else user.id,
                     action=action, resource=resource, resource_id=resource_id, detail=detail or {}))
@@ -153,7 +178,7 @@ def health():
         'source': MEASUREMENT_SOURCE,
         'live_available': MEASUREMENT_SOURCE == 'live',
         'llm_available': bool(LLM_BASE_URL),
-        'demo_password_hint': DEMO_PASSWORD,
+        'security': {'jwt_secret_is_default': JWT_SECRET_IS_DEFAULT},
         'database': DATABASE_URL.split(':', 1)[0],
         'tables': sorted(tables),
         'opencv': opencv_available(),
@@ -161,7 +186,21 @@ def health():
         'pipeline': 'edge.pipeline.VisionPipeline',
         'imu': describe_imu(MEASUREMENT_SOURCE, IMU_TRANSPORT, IMU_SERIAL, IMU_REQUIRED, IMU_PLACEMENTS),
         'sensors': ['realsense', 'arm_imu'],
+        'guide': {
+            'rig': 'mixamo',
+            'driven_by': 'telemetry_not_llm',
+            'optional_glb': '/ui/models/guide.glb',
+            'source_repo': 'hmthanh/3d-human-model',
+        },
+        'voice': voice_status(),
+        'phone_pose_available': phone_pose_available(),
+        'consumer_app': True,
     }
+
+
+@router.post('/guide/caption')
+def guide_caption(body: GuideCaptionBody, user: User = Depends(current_user)):
+    return caption_guide(body.model_dump())
 
 
 @router.post('/auth/login')
@@ -194,13 +233,29 @@ def dashboard(user: User = Depends(current_user), db: Session = Depends(get_db))
     for session in sessions:
         if session.status == 'complete' and session.goal:
             adherence.append(min(1.0, session.reps / session.goal))
+    focus = _focus_patient(patients, sessions)
+    rom = get_rom_history(db, focus.id) if focus else []
+    pain_series = get_pain_history(db, focus.id) if focus else []
+    progress = calculate_patient_progress(db, focus.id) if focus else {}
+    abd_series = [row for row in rom if row.get('movement') == 'abduction']
+    flex_series = [row for row in rom if row.get('movement') == 'flexion']
+    ordered = _patients_by_activity(patients, sessions, assessments)
+    if focus:
+        ordered = [focus] + [p for p in ordered if p.id != focus.id]
     return {
         'today_patients': len({s.patient_id for s in sessions if s.started_at.date() == today}),
         'assessments_today': len(assessments_today),
         'sessions_completed_today': len(completed_today),
         'patients_requiring_review': len({a.patient_id for a in review if a.patient_id}),
         'average_adherence': None if not adherence else round(100 * sum(adherence) / len(adherence), 1),
-        'recent_patients': [_patient(p) for p in patients[:8]],
+        'recent_patients': [_patient(p) for p in ordered[:8]],
+        'focus_patient': None if focus is None else _patient(focus),
+        'abduction_series': abd_series,
+        'flexion_series': flex_series,
+        'pain_series': pain_series,
+        'progress': progress,
+        'demo_records_present': bool(focus and (focus.is_demo or progress.get('demo_records_present'))),
+        'series_note': _series_note(focus, rom),
         'alerts': [_alert(a) for a in visible_alerts[:8]],
         'source': MEASUREMENT_SOURCE,
     }
@@ -236,6 +291,30 @@ def get_patient(patient_id: str, user: User = Depends(current_user), db: Session
     audit(db, user, 'view_patient', 'patient', patient_id)
     progress = calculate_patient_progress(db, patient_id)
     return {**_patient(patient), 'progress': progress}
+
+
+@router.get('/patients/{patient_id}/export.json')
+def export_patient_json(patient_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    patient = load_patient(db, user, patient_id)
+    record = build_patient_record(db, patient)
+    audit(db, user, 'export_patient_json', 'patient', patient_id)
+    return Response(
+        content=patient_record_json(record),
+        media_type='application/json',
+        headers={'Content-Disposition': f'attachment; filename="rehabai-{patient.id}.json"'},
+    )
+
+
+@router.get('/patients/{patient_id}/export.xlsx')
+def export_patient_xlsx(patient_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    patient = load_patient(db, user, patient_id)
+    record = build_patient_record(db, patient)
+    audit(db, user, 'export_patient_xlsx', 'patient', patient_id)
+    return Response(
+        content=patient_record_xlsx(record),
+        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition': f'attachment; filename="rehabai-{patient.id}.xlsx"'},
+    )
 
 
 @router.post('/patients/{patient_id}/assessment')
@@ -365,29 +444,59 @@ def start_session(body: SessionStartBody, user: User = Depends(current_user), db
         raise HTTPException(400, spec['name']+' is in the library but camera tracking is not enabled')
     if body.side not in ('left', 'right'):
         raise HTTPException(400, 'Invalid side')
+    capture = (body.capture or 'auto').strip().lower()
+    if capture not in ('auto', 'simulation', 'phone'):
+        raise HTTPException(400, 'capture must be auto, simulation, or phone')
+    source = MEASUREMENT_SOURCE
+    if capture == 'simulation':
+        source = 'simulation'
+    elif capture == 'phone':
+        if not phone_pose_available():
+            raise HTTPException(400, 'Phone capture requires REHABAI_POSE_MODEL or REHABAI_PHONE_INFERENCE_URL')
+        source = 'phone'
+    elif capture == 'auto' and MEASUREMENT_SOURCE == 'live' and not POSE_MODEL:
+        raise HTTPException(400, 'Live capture is configured but REHABAI_POSE_MODEL is unavailable')
+    if source == 'phone' and spec.get('movement') not in ('abduction', 'elevation'):
+        raise HTTPException(400, 'Phone RGB currently supports frontal-plane abduction/elevation only')
     plan = db.scalars(select(RehabPlan).where(RehabPlan.patient_id == patient.id,
                                              RehabPlan.status.in_(('approved', 'active')))).first()
+    if user.role == 'PATIENT' and body.kind == 'rehab':
+        allowed = {
+            item.get('exercise_id') for item in ((plan.exercises if plan else None) or [])
+            if isinstance(item, dict)
+        }
+        if body.exercise_id not in allowed:
+            raise HTTPException(403, 'This exercise is not in the patient approved rehabilitation plan')
     sid = 'SESSION_' + uuid.uuid4().hex[:8].upper()
     row = RehabSession(
         id=sid, patient_id=patient.id, clinician_id=None if user.role == 'PATIENT' else user.id,
-        exercise_id=body.exercise_id, side=body.side, source=MEASUREMENT_SOURCE, model_version='pending',
+        exercise_id=body.exercise_id, side=body.side, source=source, model_version='pending',
         consent_recording=body.consent_recording, target=body.target, goal=body.goal,
-        pain_before=body.pain_before, status='calibrating', is_demo=patient.is_demo or MEASUREMENT_SOURCE == 'simulation',
+        pain_before=body.pain_before, status='calibrating', is_demo=patient.is_demo or source == 'simulation',
         kind='assessment' if body.kind == 'assessment' else 'rehab', intake=None,
     )
+    # Consumer assessment sessions can start with memory intake already confirmed.
+    if row.kind == 'assessment':
+        mem = load_memory(patient.id)
+        intake = mem.get('intake')
+        if isinstance(intake, dict) and intake.get('confirmed'):
+            row.intake = intake
+            if isinstance(intake.get('pain_rest'), int):
+                row.pain_before = intake['pain_rest']
     db.add(row)
     if body.consent_recording:
         db.add(Consent(id=new_id('CON-'), patient_id=patient.id, kind='recording', granted=True))
     try:
         HUB.start(sid, patient.id, body.exercise_id, body.side, body.target, body.goal,
-                  MEASUREMENT_SOURCE, body.consent_recording)
+                  source, body.consent_recording)
     except Exception as exc:
         row.status = 'failed'
         raise HTTPException(400, str(exc)) from exc
-    audit(db, user, 'start_session', 'session', sid, {'exercise': body.exercise_id, 'source': MEASUREMENT_SOURCE})
+    audit(db, user, 'start_session', 'session', sid, {'exercise': body.exercise_id, 'source': source})
     db.flush()
-    return {'id': sid, 'source': MEASUREMENT_SOURCE, 'status': 'calibrating', 'kind': row.kind,
-            'plan_id': None if plan is None else plan.id, 'exercise': spec, 'intake': None}
+    return {'id': sid, 'source': source, 'status': 'calibrating', 'kind': row.kind,
+            'plan_id': None if plan is None else plan.id, 'exercise': spec, 'intake': row.intake,
+            'phone_capture': source == 'phone'}
 
 
 @router.get('/sessions/{session_id}')
@@ -402,15 +511,164 @@ def get_session(session_id: str, user: User = Depends(current_user), db: Session
 
 @router.get('/intake/script')
 def intake_script(_user: User = Depends(current_user)):
-    return script_payload()
+    return {**script_payload(), 'voice': voice_status()}
 
 
 @router.post('/intake/parse')
-def intake_parse(body: IntakeParseBody, _user: User = Depends(current_user)):
+async def intake_parse(body: IntakeParseBody, _user: User = Depends(current_user)):
     try:
-        return parse_utterance(body.text, body.field, body.awaiting_confirm)
+        return await parse_questionnaire_reply(body.text, body.field, body.awaiting_confirm, body.language)
     except KeyError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@router.post('/intake/transcribe')
+async def intake_transcribe(audio: UploadFile = File(...), language: str = Form('en-IN'),
+                            _user: User = Depends(current_user)):
+    data = await audio.read()
+    if len(data) > 2_000_000:
+        raise HTTPException(400, 'Audio clip is too large')
+    result = await transcribe_audio(data, audio.filename or 'utterance.wav', audio.content_type or 'audio/wav', language)
+    return {
+        'transcript': result.get('transcript') or '',
+        'engine': result.get('engine'),
+        'empty': not bool(result.get('transcript')),
+        'language_code': result.get('language_code'),
+        'provider_fallback': bool(result.get('provider_fallback')),
+        'provider_error': result.get('provider_error'),
+    }
+
+
+@router.post('/intake/speak')
+async def intake_speak(body: VoiceSpeakBody, _user: User = Depends(current_user)):
+    try:
+        audio, media_type = await synthesize_speech(body.text, body.language)
+    except VoiceProviderError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return Response(content=audio, media_type=media_type, headers={'Cache-Control': 'no-store'})
+
+
+@router.post('/voice/agent')
+async def voice_agent(
+    audio: UploadFile | None = File(default=None),
+    text: str = Form(''),
+    context: str = Form('{}'),
+    language: str = Form('en-IN'),
+    patient_id: str = Form(''),
+    speak: str = Form('1'),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        raw_ctx = json.loads(context or '{}')
+    except json.JSONDecodeError:
+        raw_ctx = {}
+    ctx = sanitize_context(raw_ctx)
+    ctx['language'] = language if language in ('en-IN', 'hi-IN') else 'en-IN'
+    stt = {'transcript': (text or '').strip(), 'engine': 'typed', 'provider_fallback': False}
+    if audio is not None:
+        data = await audio.read()
+        if len(data) > 2_000_000:
+            raise HTTPException(400, 'Audio clip is too large')
+        if data:
+            try:
+                # Talk must stay interactive: skip slow Windows offline STT on the live path.
+                prefer = 'sarvam' if VOICE_STT == 'sarvam' else 'elevenlabs'
+                stt = await transcribe_audio(
+                    data, audio.filename or 'utterance.wav', audio.content_type or 'audio/wav', language,
+                    fast=False, prefer=prefer, allow_offline=False,
+                )
+            except Exception:
+                stt = {
+                    'transcript': '',
+                    'engine': 'none',
+                    'provider_fallback': True,
+                    'provider_error': 'stt_exception',
+                }
+    transcript = (stt.get('transcript') or text or '').strip()
+    parsed = None
+    pending_value = ctx.get('pending_value')
+    if isinstance(pending_value, str) and pending_value.isdigit():
+        pending_value = int(pending_value)
+    if not isinstance(pending_value, int):
+        pending_value = None
+
+    if ctx.get('scene') == 'consumer':
+        if not patient_id and user.role == 'PATIENT':
+            mine = db.scalars(select(Patient).where(Patient.user_id == user.id)).first()
+            patient_id = mine.id if mine else ''
+        if not patient_id:
+            raise HTTPException(400, 'patient_id is required for the consumer voice agent')
+        load_patient(db, user, patient_id)
+        talk = await consumer_reply(
+            transcript,
+            patient_id=patient_id,
+            language=ctx['language'],
+            db=db,
+            pending_value=pending_value,
+            awaiting_confirm=bool(ctx.get('awaiting_confirm')),
+            intake_field=str(ctx['intake_field']) if ctx.get('intake_field') else None,
+        )
+        parsed = talk.get('parsed')
+    else:
+        field = ctx.get('intake_field')
+        if field and transcript:
+            try:
+                parsed = await parse_questionnaire_reply(
+                    transcript, str(field), bool(ctx.get('awaiting_confirm')), language,
+                )
+            except KeyError:
+                parsed = None
+        if parsed and parsed.get('intent') in ('number', 'confirm_yes', 'confirm_no', 'safety_pause'):
+            talk = {
+                'spoken': parsed.get('spoken') or transcript,
+                'action': 'pause' if parsed.get('intent') == 'safety_pause' else 'none',
+                'engine': parsed.get('engine'),
+            }
+        elif ctx.get('scene') == 'assistant' and patient_id:
+            load_patient(db, user, patient_id)
+            supervisor = run_supervisor(db, patient_id, transcript or 'Summarise stored progress.', user.role)
+            talk = {
+                'spoken': (supervisor.get('summary') or '')[:400],
+                'action': 'none',
+                'engine': 'supervisor+' + ('llm' if supervisor.get('llm_used') else 'deterministic'),
+            }
+        else:
+            talk = await live_reply(transcript, ctx, language)
+
+    spoken = talk.get('spoken') or 'I am RehabAI. This is not a diagnosis.'
+    audio_b64 = None
+    media_type = None
+    tts_engine = 'browser-speech'
+    want_tts = str(speak or '0').strip().lower() in ('1', 'true', 'yes')
+    if want_tts:
+        try:
+            wav, media_type = await synthesize_speech(spoken, language)
+            if len(wav) <= 900_000:
+                audio_b64 = base64.b64encode(wav).decode()
+                tts_engine = 'elevenlabs' if media_type == 'audio/mpeg' else 'sarvam-shubh'
+            else:
+                media_type = None
+        except VoiceProviderError:
+            media_type = None
+    return {
+        'transcript': transcript,
+        'spoken': spoken,
+        'action': talk.get('action') or 'none',
+        'engine': talk.get('engine'),
+        'stt_engine': stt.get('engine'),
+        'tts_engine': tts_engine if audio_b64 else 'browser-speech',
+        'audio_base64': audio_b64,
+        'media_type': media_type,
+        'parsed': parsed,
+        'provider_fallback': bool(stt.get('provider_fallback')),
+        'safety': ctx.get('safety'),
+        'intake_field': talk.get('intake_field'),
+        'awaiting_confirm': bool(talk.get('awaiting_confirm')),
+        'pending_value': talk.get('pending_value'),
+        'intake': talk.get('intake'),
+        'memory': talk.get('memory'),
+    }
 
 
 @router.post('/sessions/{session_id}/intake')
@@ -470,6 +728,73 @@ def session_frame(session_id: str, user: User = Depends(current_user), db: Sessi
     return Response(content=jpeg, media_type='image/jpeg')
 
 
+@router.post('/sessions/{session_id}/phone-frame')
+async def session_phone_frame(
+    session_id: str,
+    frame: UploadFile = File(...),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    row = db.get(RehabSession, session_id)
+    if row is None:
+        raise HTTPException(404, 'Session not found')
+    load_patient(db, user, row.patient_id)
+    if not phone_pose_available():
+        raise HTTPException(400, 'Phone capture requires REHABAI_POSE_MODEL or REHABAI_PHONE_INFERENCE_URL')
+    if row.source != 'phone':
+        raise HTTPException(400, 'Only phone capture sessions can ingest phone frames')
+    if (frame.content_type or '').lower() not in ('image/jpeg', 'image/jpg'):
+        raise HTTPException(415, 'Phone frame must use image/jpeg')
+    data = await frame.read()
+    if not data or len(data) > PHONE_FRAME_MAX_BYTES:
+        raise HTTPException(400, f'Phone frame must be a JPEG under {PHONE_FRAME_MAX_BYTES} bytes')
+    try:
+        telemetry = HUB.ingest_phone_frame(session_id, data)
+    except KeyError as exc:
+        raise HTTPException(404, 'Live session is not active') from exc
+    except PhoneFrameRateLimit as exc:
+        raise HTTPException(429, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        'ok': True,
+        'source': 'phone',
+        'shoulder_angle': telemetry.get('shoulder_angle'),
+        'valid': telemetry.get('valid'),
+        'rep': telemetry.get('rep'),
+        'safety': (telemetry.get('safety') or {}).get('level'),
+        'feedback': telemetry.get('feedback'),
+    }
+
+
+@router.get('/consumer/me')
+def consumer_me(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if user.role != 'PATIENT':
+        raise HTTPException(403, 'Consumer home is for the signed-in patient only')
+    patient = db.scalars(select(Patient).where(Patient.user_id == user.id)).first()
+    if patient is None:
+        raise HTTPException(404, 'No patient record for this account')
+    load_patient(db, user, patient.id)
+    progress = calculate_patient_progress(db, patient.id)
+    rom = get_rom_history(db, patient.id) or []
+    pain = get_pain_history(db, patient.id) or []
+    memory = patient_memory_for_agent(db, patient.id)
+    return {
+        'patient_id': patient.id,
+        'is_demo': bool(patient.is_demo),
+        'affected_side': patient.affected_side,
+        'progress': progress,
+        'abduction_series': [r for r in rom if r.get('movement') == 'abduction'],
+        'flexion_series': [r for r in rom if r.get('movement') == 'flexion'],
+        'pain_series': pain,
+        'memory': memory,
+        'intake_complete': bool((load_memory(patient.id).get('intake') or {}).get('confirmed')),
+        'phone_pose_available': phone_pose_available(),
+        'greeting': greeting_prompt('en-IN', load_memory(patient.id)),
+        'disclaimer': 'This is not a diagnosis. Stored measurements only.',
+    }
+
+
 @router.post('/sessions/{session_id}/confirm')
 def confirm_session(session_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
     row = db.get(RehabSession, session_id)
@@ -526,6 +851,10 @@ def finish_session(session_id: str, body: SessionFinishBody, user: User = Depend
     except KeyError as exc:
         raise HTTPException(404, 'Live session is not active') from exc
     assessment = persist_finished_session(db, row, patient, summary, history, body, user)
+    summary_for_memory = dict(summary)
+    summary_for_memory['pain_after'] = body.pain_after
+    movement = 'flexion' if 'flexion' in (row.exercise_id or '') else 'abduction'
+    merge_session_into_memory(patient.id, summary_for_memory, row.id, movement)
     audit(db, user, 'finish_session', 'session', row.id, {'reps': row.reps, 'source': row.source})
     db.flush()
     return {'session': _session(row), 'summary': summary, 'assessment_id': None if assessment is None else assessment.id,
@@ -674,14 +1003,28 @@ def get_recording(recording_id: str, user: User = Depends(current_user), db: Ses
 
 
 @router.websocket('/ws/sessions/{session_id}')
-async def session_ws(websocket: WebSocket, session_id: str, token: str = Query(...)):
+async def session_ws(
+    websocket: WebSocket,
+    session_id: str,
+    token: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
     import asyncio
+    protocols = [item.strip() for item in websocket.headers.get('sec-websocket-protocol', '').split(',') if item.strip()]
+    protocol_auth = len(protocols) >= 2 and protocols[0] == 'rehabai'
+    credential = protocols[1] if protocol_auth else token
     try:
-        decode_token(token)
+        payload = decode_token(credential or '')
     except HTTPException:
         await websocket.close(code=4401)
         return
-    await websocket.accept()
+    user = db.get(User, payload.get('sub'))
+    row = db.get(RehabSession, session_id)
+    patient = None if row is None else db.get(Patient, row.patient_id)
+    if user is None or not user.is_active or not can_view_patient(user, patient):
+        await websocket.close(code=4403)
+        return
+    await websocket.accept(subprotocol='rehabai' if protocol_auth else None)
     sent = 0
     try:
         while True:
@@ -702,6 +1045,54 @@ async def session_ws(websocket: WebSocket, session_id: str, token: str = Query(.
 def _visible_patients(db, user):
     rows = db.scalars(select(Patient).where(Patient.hospital_id == user.hospital_id).order_by(Patient.full_name)).all()
     return [p for p in rows if can_view_patient(user, p)]
+
+
+def _focus_patient(patients, sessions):
+    if not patients:
+        return None
+    by_id = {p.id: p for p in patients}
+    complete = [s for s in sessions if s.status in ('complete', 'blocked') and s.patient_id in by_id]
+    complete.sort(key=lambda s: (s.ended_at or s.started_at).isoformat() if (s.ended_at or s.started_at) else '', reverse=True)
+    for session in complete:
+        patient = by_id.get(session.patient_id)
+        if patient is not None and not patient.is_demo:
+            return patient
+    if complete:
+        return by_id.get(complete[0].patient_id) or patients[0]
+    return patients[0]
+
+
+def _patients_by_activity(patients, sessions, assessments):
+    last = {}
+    for session in sessions:
+        stamp = session.ended_at or session.started_at
+        if stamp and (session.patient_id not in last or stamp > last[session.patient_id]):
+            last[session.patient_id] = stamp
+    for row in assessments:
+        stamp = row.created_at
+        if stamp and (row.patient_id not in last or stamp > last[row.patient_id]):
+            last[row.patient_id] = stamp
+
+    def key(patient):
+        stamp = last.get(patient.id)
+        return stamp.isoformat() if stamp is not None else ''
+
+    return sorted(patients, key=key, reverse=True)
+
+
+def _series_note(patient, rom):
+    if patient is None:
+        return 'No stored measurements yet.'
+    live_n = sum(1 for row in rom if row.get('source') == 'live')
+    sim_n = sum(1 for row in rom if row.get('source') == 'simulation')
+    if patient.is_demo:
+        return 'Demo/synthetic seed plus any later stored sessions. Not a live camera record unless labelled live.'
+    if live_n:
+        extra = f' · {sim_n} simulation' if sim_n else ''
+        return f'{live_n} live stored points{extra}. Not a diagnosis.'
+    if sim_n:
+        return f'{sim_n} labelled simulation points. Not live sensors.'
+    return 'Stored measurements only. Missing values are not invented.'
 
 
 def _user(user):

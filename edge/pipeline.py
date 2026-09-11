@@ -8,6 +8,7 @@ from edge.depth.filtering import SkeletonEMA
 from edge.exercises.library import get_exercise
 from edge.exercises.state_machine import ExerciseMachine
 from edge.feedback.coach import coach_message
+from edge.guide_pose import build_guide
 from edge.imu.features import ImuWindow
 from edge.imu.fusion import ComplementaryFusion
 from edge.overlay import jpeg_b64, overlay_spec, render_rgb
@@ -75,7 +76,9 @@ class VisionPipeline:
         calibration = evaluate_calibration(snapshot)
         extra = {'calibration': calibration, 'source': snapshot.get('source', self.source),
                  'model_version': snapshot.get('model_version', 'unknown'), 'overlay': {'points': {}, 'bones': []},
-                 'sensors': _sensor_labels(snapshot, self.source)}
+                 'sensors': _sensor_labels(snapshot, self.source),
+                 'measurement_profile': snapshot.get('capture_profile', self.source),
+                 'measurement_geometry': snapshot.get('measurement_geometry', 'rgbd_3d')}
         people = snapshot.get('people', 0)
         points = snapshot.get('points') or {}
         landmarks = snapshot.get('landmarks2d') or {}
@@ -88,8 +91,7 @@ class VisionPipeline:
             sample['feedback'] = coach_message(sample, safety)
             extra['frame_jpeg'] = jpeg_b64(render_rgb(landmarks, self.side, snapshot.get('source', self.source),
                                                      imu_source=_imu_source(snapshot)))
-            self.last_safety = safety
-            return build_telemetry(self.session_id, self.exercise_id, sample, safety, {}, extra)
+            return self._emit(sample, safety, {}, extra)
         filtered = self.filter.update(points, snapshot['timestamp'])
         try:
             measured = features(filtered, self.side, self.spec['movement'], self.reference)
@@ -103,8 +105,7 @@ class VisionPipeline:
             extra['overlay'] = overlay_spec(landmarks, self.side)
             extra['frame_jpeg'] = jpeg_b64(render_rgb(landmarks, self.side, snapshot.get('source', self.source),
                                                      imu_source=_imu_source(snapshot)))
-            self.last_safety = safety
-            return build_telemetry(self.session_id, self.exercise_id, sample, safety, landmarks, extra)
+            return self._emit(sample, safety, landmarks, extra)
         velocity = 0.0
         dt = None
         if self.previous_angle is not None:
@@ -127,7 +128,8 @@ class VisionPipeline:
             'people': 1,
             'invalid_reps': self.machine.invalid_reps,
             'camera_lost': False,
-            'depth_unavailable': (not snapshot.get('simulation')) and snapshot.get('depth_ok') is False,
+            'depth_unavailable': bool(snapshot.get('depth_required', not snapshot.get('simulation')))
+                                 and snapshot.get('depth_ok') is False,
             **imu_safety,
         })
         sample['feedback'] = coach_message(sample, safety)
@@ -141,6 +143,10 @@ class VisionPipeline:
         extra['frame_jpeg'] = jpeg_b64(render_rgb(landmarks, self.side, snapshot.get('source', self.source),
                                                  sample.get('angle'), sample.get('feedback'),
                                                  imu_source=_imu_source(snapshot)))
+        return self._emit(sample, safety, landmarks, extra)
+
+    def _emit(self, sample, safety, landmarks, extra):
+        extra['guide'] = build_guide(self.spec, self.side, sample, safety, self.machine.target)
         self.last_safety = safety
         return build_telemetry(self.session_id, self.exercise_id, sample, safety, landmarks, extra)
 
@@ -186,5 +192,6 @@ def _sensor_labels(snapshot, fallback):
     imu = snapshot.get('imu')
     return {
         'camera': camera,
+        'depth': (snapshot.get('sensors') or {}).get('depth', 'available' if snapshot.get('depth_ok') else 'unavailable'),
         'imu': 'off' if imu is None else imu.get('source', 'off'),
     }
