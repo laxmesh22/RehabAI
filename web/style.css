@@ -382,19 +382,20 @@ td { padding: 12px 8px; border-bottom: 1px solid #eef3ee; }
 .consumer-talk { padding: 22px; border-radius: var(--r); }
 .consumer-talk h2 { font-size: 1.35rem; line-height: 1.35; margin: 14px 0 10px; }
 
-/* —— Consumer agentic two-slide shell —— */
+/* —— Consumer talk-first shell —— */
 .consumer-app {
   min-height: 100vh;
-  padding: 18px 18px 110px;
+  padding: 18px 18px 48px;
   max-width: 880px;
   margin: 0 auto;
   background:
-    radial-gradient(1200px 500px at 10% -10%, #d9e8d4 0%, transparent 55%),
-    linear-gradient(180deg, #f4f7f2 0%, var(--bg) 40%, #e7eee4 100%);
+    radial-gradient(900px 420px at 50% 18%, #cfe3c8 0%, transparent 58%),
+    linear-gradient(180deg, #eef4eb 0%, var(--bg) 42%, #e4ebe0 100%);
 }
+.consumer-app.talk-focus { padding-bottom: 28px; }
 .consumer-top {
   display: flex; justify-content: space-between; align-items: center; gap: 16px;
-  margin-bottom: 28px;
+  margin-bottom: 12px;
 }
 .consumer-steps {
   display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 600;
@@ -412,33 +413,71 @@ td { padding: 12px 8px; border-bottom: 1px solid #eef3ee; }
 .consumer-steps i {
   width: 28px; height: 1px; background: var(--line); display: inline-block;
 }
-.agent-slide h1, .dash-slide h1 {
-  font-size: clamp(40px, 9vw, 64px); line-height: .92; margin: 8px 0 14px; font-weight: 700;
-  letter-spacing: -.06em;
+.talk-hero, .dash-slide {
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  min-height: calc(100vh - 120px); justify-content: center; gap: 10px;
 }
-.agent-slide .lede, .dash-slide .lede {
-  max-width: 34rem; color: var(--soft); line-height: 1.55; margin: 0 0 28px; font-size: 1.05rem;
+.talk-hero h1, .dash-slide h1 {
+  font-size: clamp(44px, 11vw, 72px); line-height: .9; margin: 0; font-weight: 700;
+  letter-spacing: -.07em;
 }
-.agent-stage { display: grid; gap: 14px; }
-.agent-prompt-card, .agent-report {
-  background: #fff; border-radius: 28px; padding: 22px 22px 20px;
-  border: 1px solid rgba(22,22,22,.06);
+.dash-slide { align-items: stretch; text-align: left; justify-content: flex-start; padding-top: 8px; }
+.dash-slide .lede {
+  max-width: 34rem; color: var(--soft); line-height: 1.55; margin: 0 0 22px; font-size: 1.05rem;
 }
-.agent-prompt-card h2 {
-  font-size: clamp(1.25rem, 3.5vw, 1.7rem); line-height: 1.3; margin: 12px 0 8px; font-weight: 600;
+.talk-orb {
+  position: relative;
+  width: min(72vw, 280px); height: min(72vw, 280px);
+  margin: 18px 0 8px;
+  border: 0; border-radius: 50%;
+  background: radial-gradient(circle at 35% 28%, #2a2a2a 0%, var(--ink) 70%);
+  color: #fff;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 6px; cursor: pointer;
+  box-shadow: 0 24px 48px rgba(22,22,22,.22);
+  transition: transform .2s ease, box-shadow .2s ease;
 }
-.lang-row { gap: 8px; margin-bottom: 8px; }
-.agent-progress {
-  display: flex; align-items: center; gap: 6px; margin: 10px 0 4px;
+.talk-orb:hover { transform: scale(1.03); }
+.talk-orb:active { transform: scale(.98); }
+.talk-orb strong { font-size: clamp(28px, 8vw, 40px); letter-spacing: -.04em; z-index: 1; }
+.talk-orb em {
+  font-style: normal; font-size: 13px; color: #c9d0c6; max-width: 70%; line-height: 1.3; z-index: 1;
 }
-.agent-progress em {
-  width: 10px; height: 10px; border-radius: 50%; background: #d7ded4; display: inline-block;
+.talk-orb-core {
+  position: absolute; width: 42%; height: 42%; border-radius: 50%;
+  background: radial-gradient(circle at 40% 35%, #9fc896, var(--mint));
+  opacity: .22; z-index: 0;
 }
-.agent-progress em.done { background: var(--ok); }
-.agent-progress em.now { background: var(--ink); transform: scale(1.25); }
-.agent-progress span { margin-left: 8px; font-size: 12px; color: var(--muted); font-weight: 600; }
-.agent-report h3 { margin: 0 0 8px; font-size: 1.05rem; }
-.agent-report p { color: var(--soft); line-height: 1.5; margin: 0 0 14px; }
+.talk-orb-ring {
+  position: absolute; inset: -10px; border-radius: 50%;
+  border: 2px solid rgba(77,104,72,.35);
+  animation: talkRing 2.4s ease-out infinite;
+}
+.talk-orb.hot {
+  background: radial-gradient(circle at 35% 28%, #c45c4a 0%, var(--clay) 72%);
+  box-shadow: 0 24px 56px rgba(196,92,74,.35);
+}
+.talk-orb.hot .talk-orb-ring { border-color: rgba(255,255,255,.45); animation-duration: 1.2s; }
+.talk-orb.hot em { color: #ffe8e3; }
+@keyframes talkRing {
+  0% { transform: scale(.92); opacity: .9; }
+  100% { transform: scale(1.12); opacity: 0; }
+}
+.talk-live {
+  max-width: 28rem; margin: 4px 0 0; font-size: 1.05rem; line-height: 1.4; color: var(--ink);
+  min-height: 1.4em;
+}
+.talk-live.sub { font-size: .92rem; color: var(--muted); }
+.talk-lang { display: flex; gap: 8px; margin-top: 8px; }
+.talk-lang .ghost { min-width: 48px; }
+.agent-report {
+  background: #fff; border-radius: 22px; padding: 16px 18px;
+  border: 1px solid rgba(22,22,22,.06); margin-top: 12px; width: min(100%, 360px);
+}
+.agent-report.compact {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px;
+}
+.agent-report.compact[hidden] { display: none !important; }
 .agent-report.hot {
   outline: 2px solid var(--ink);
   animation: agentPulse .9s ease-in-out 2;
@@ -450,7 +489,7 @@ td { padding: 12px 8px; border-bottom: 1px solid #eef3ee; }
 .report-upload {
   display: inline-flex; align-items: center; justify-content: center;
   background: var(--ink); color: #fff; border-radius: 999px; padding: 12px 18px;
-  font-weight: 600; cursor: pointer; margin-right: 8px;
+  font-weight: 600; cursor: pointer;
 }
 .person-kpis {
   display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 22px 0 18px;

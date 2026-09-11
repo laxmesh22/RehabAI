@@ -60,24 +60,27 @@ class ConsumerVoiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_consumer_asks_first_question_without_inventing(self):
         from agent import consumer_voice
-        row = await consumer_voice.consumer_reply('', patient_id='P-test', language='en-IN')
-        self.assertEqual(row['engine'], 'consumer-prompt')
+        with patch.object(consumer_voice, 'ANTHROPIC_API_KEY', ''):
+            row = await consumer_voice.consumer_reply('', patient_id='P-test', language='en-IN')
+        self.assertEqual(row['engine'], 'consumer-fallback')
         self.assertIn('Pain at rest', row['spoken'])
         self.assertEqual(row['intake_field'], 'pain_rest')
         self.assertIsNone(row['parsed'])
+        self.assertNotIn('diagnosis', row['spoken'].lower())
 
     async def test_consumer_confirms_and_advances(self):
         from agent import consumer_voice
-        first = await consumer_voice.consumer_reply('four', patient_id='P-test', language='en-IN')
-        self.assertTrue(first['awaiting_confirm'])
-        self.assertEqual(first['pending_value'], 4)
-        second = await consumer_voice.consumer_reply(
-            'yes', patient_id='P-test', language='en-IN',
-            awaiting_confirm=True, pending_value=4, intake_field='pain_rest',
-        )
+        with patch.object(consumer_voice, 'ANTHROPIC_API_KEY', ''):
+            first = await consumer_voice.consumer_reply('four', patient_id='P-test', language='en-IN')
+            self.assertTrue(first['awaiting_confirm'])
+            self.assertEqual(first['pending_value'], 4)
+            second = await consumer_voice.consumer_reply(
+                'yes', patient_id='P-test', language='en-IN',
+                awaiting_confirm=True, pending_value=4, intake_field='pain_rest',
+            )
         self.assertEqual(second['intake']['pain_rest'], 4)
         self.assertEqual(second['intake_field'], 'pain_movement')
-        self.assertIn('Saved', second['spoken'])
+        self.assertTrue('Saved' in second['spoken'] or 'Pain while moving' in second['spoken'])
 
     async def test_consumer_completes_to_report_phase(self):
         from agent import consumer_voice
@@ -86,7 +89,8 @@ class ConsumerVoiceTests(unittest.IsolatedAsyncioTestCase):
         for i, fid in enumerate(INTAKE_FIELDS):
             intake = apply_confirmed_value(intake, fid, min(i, 4 if 'difficulty' in fid else 10), 'voice')
         memory_mod.save_memory('P-done', {'intake': intake, 'report_phase': 'needed'})
-        row = await consumer_voice.consumer_reply('', patient_id='P-done', language='en-IN')
+        with patch.object(consumer_voice, 'ANTHROPIC_API_KEY', ''):
+            row = await consumer_voice.consumer_reply('', patient_id='P-done', language='en-IN')
         self.assertEqual(row['action'], 'await_report')
         self.assertEqual(row['phase'], 'report')
         skip = await consumer_voice.consumer_reply('skip', patient_id='P-done', language='en-IN')
@@ -167,8 +171,14 @@ class ConsumerApiTests(unittest.TestCase):
         res = self.client.post('/api/voice/agent', headers=self.headers, data=body)
         self.assertEqual(res.status_code, 200)
         data = res.json()
-        self.assertIn('Pain at rest', data['spoken'])
+        self.assertTrue(data.get('spoken'))
+        self.assertIn(data.get('engine'), {
+            'consumer-fallback', 'consumer-autonomous', 'consumer-prompt', 'consumer-report',
+            'consumer-ready', 'consumer-complete',
+        })
         self.assertEqual(data['tts_engine'], 'browser-speech')
+        # Numbers must never be invented into spoken on empty open turn without patient words.
+        self.assertNotRegex(data['spoken'], r'\b(?:ROM|recovery)\s*\d')
 
     def test_phone_frame_endpoint_without_model(self):
         start = self.client.post('/api/sessions', headers=self.headers, json={

@@ -154,6 +154,15 @@
     return hi ? 'रिहैबएआई सुन रहा है।' : 'RehabAI is listening. Talk until you are done.';
   }
 
+  function revealReportPanel(message) {
+    const panel = document.getElementById('report-panel');
+    if (!panel) return;
+    panel.hidden = false;
+    panel.classList.add('hot', 'show');
+    const status = document.getElementById('report-status');
+    if (status && message) status.textContent = message;
+  }
+
   function syncConsumerFromReply(data) {
     if (sessionContext().scene !== 'consumer') return;
     if (data.intake_field) consumerState.intake_field = data.intake_field;
@@ -168,10 +177,21 @@
     }
     const prompt = document.getElementById('consumer-prompt');
     const status = document.getElementById('consumer-status');
-    if (prompt && data.spoken) prompt.textContent = data.spoken;
+    if (prompt && data.spoken) {
+      prompt.hidden = false;
+      prompt.textContent = data.spoken;
+    }
     if (status) {
+      status.hidden = false;
       if (data.transcript) status.textContent = 'You: ' + data.transcript;
-      else if (data.stt_engine && data.stt_engine !== 'typed') status.textContent = 'Listening for your answer…';
+      else if (data.phase === 'report' || data.action === 'await_report') status.textContent = 'Report photo or skip';
+      else status.textContent = 'Listening…';
+    }
+    if (typeof global.RehabConsumerLive?.showLive === 'function') {
+      global.RehabConsumerLive.showLive(data.spoken, status?.textContent);
+    }
+    if (data.action === 'await_report' || data.phase === 'report') {
+      revealReportPanel(data.spoken || 'Upload a report photo, or say skip.');
     }
   }
 
@@ -281,10 +301,8 @@
           global.RehabIntakeOnParsed(data.parsed, data.transcript);
         }
         applyStudioAction(data.action);
-        if (data.action === 'await_report') {
-          document.getElementById('report-panel')?.classList.add('hot');
-          document.getElementById('report-status') && (document.getElementById('report-status').textContent =
-            'Upload a report photo, or tap Skip report.');
+        if (data.action === 'await_report' || data.phase === 'report') {
+          revealReportPanel(data.spoken || 'Upload a report photo, or say skip.');
         }
         if (data.spoken) await playReply(data);
         if (!talking || gen !== callGen) break;
@@ -302,7 +320,9 @@
         intake.stopVoice?.();
         document.getElementById('voice-dock')?.classList.remove('hot');
         setTitle('Talk');
-        setHint('Tap to start · talks until you end');
+        setHint(sessionContext().scene === 'consumer'
+          ? 'Tap — I ask what we still need'
+          : 'Tap to start · talks until you end');
       }
     }
   }

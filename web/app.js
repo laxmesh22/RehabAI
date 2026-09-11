@@ -261,32 +261,23 @@ function shell(content, active) {
 function consumerShell(content, active) {
   const homeOn = active === '#/app/home';
   const step = content.step || (homeOn ? 2 : 1);
-  app.innerHTML = `<div class="consumer-app">
+  const hideDock = Boolean(content.hideDock);
+  app.innerHTML = `<div class="consumer-app ${hideDock ? 'talk-focus' : ''}">
     <header class="consumer-top">
       <div class="brand">${brandMark(true)}<strong>RehabAI</strong></div>
       <nav class="consumer-steps" aria-label="Flow">
-        <a class="${step === 1 ? 'on' : ''}" href="#/app"><span>1</span> Agent</a>
+        <a class="${step === 1 ? 'on' : ''}" href="#/app"><span>1</span> Talk</a>
         <i></i>
-        <a class="${step === 2 ? 'on' : ''}" href="#/app/home"><span>2</span> Dashboard</a>
+        <a class="${step === 2 ? 'on' : ''}" href="#/app/home"><span>2</span> You</a>
       </nav>
     </header>
     <main class="consumer-main">${content.body || ''}</main>
   </div>
-  <button type="button" class="voice-dock" id="voice-dock" aria-label="Talk to RehabAI">
+  ${hideDock ? '' : `<button type="button" class="voice-dock" id="voice-dock" aria-label="Talk to RehabAI">
     <span class="voice-dock-mic" aria-hidden="true"></span>
-    <span class="voice-dock-copy"><strong id="voice-dock-title">Talk</strong><em id="voice-dock-hint">One agent · records your answers</em></span>
-  </button>`;
+    <span class="voice-dock-copy"><strong id="voice-dock-title">Talk</strong><em id="voice-dock-hint">Tap to talk</em></span>
+  </button>`}`;
   window.RehabVoiceAgent?.bindDock?.();
-}
-
-function consumerProgress(intake, fieldId) {
-  const fields = ['pain_rest', 'pain_movement', 'difficulty_dressing', 'difficulty_grooming', 'difficulty_overhead', 'difficulty_behind_back'];
-  const done = fields.filter(id => intake && (intake.fields || {})[id]).length;
-  const active = Math.max(0, fields.indexOf(fieldId));
-  return `<div class="agent-progress" aria-label="${done} of 6 questions saved">
-    ${fields.map((id, i) => `<em class="${(intake && (intake.fields || {})[id]) ? 'done' : (i === active ? 'now' : '')}"></em>`).join('')}
-    <span>${done}/6</span>
-  </div>`;
 }
 
 async function renderConsumerTalk() {
@@ -296,8 +287,7 @@ async function renderConsumerTalk() {
     location.hash = '#/app/home';
     return renderConsumerHome();
   }
-  let language = window.RehabVoiceLang || 'en-IN';
-  window.RehabVoiceLang = language;
+  window.RehabVoiceLang = window.RehabVoiceLang || 'en-IN';
   window.RehabVoiceContext = {
     scene: 'consumer',
     patient_id: me.patient_id,
@@ -306,49 +296,58 @@ async function renderConsumerTalk() {
     pending_value: null,
   };
   const phase = me.phase || (me.intake_complete ? 'report' : 'questionnaire');
-  const scores = (me.memory && me.memory.intake_scores) || {};
   consumerShell({
     step: 1,
-    body: `<section class="agent-slide">
-      <p class="eyebrow">${me.is_demo ? 'Demo patient · not clinical validation' : 'Patient agent'}</p>
+    hideDock: true,
+    body: `<section class="talk-hero">
+      <p class="eyebrow">${me.is_demo ? 'Demo · not clinical validation' : 'Your agent'}</p>
       <h1>RehabAI</h1>
-      <p class="lede">One voice agent records your shoulder questionnaire, then scans a report with OCR. Next slide is your personal dashboard. This is not a diagnosis.</p>
-      <div class="agent-stage">
-        <div class="agent-prompt-card">
-          <div class="row lang-row">
-            <button class="ghost" id="lang-en" type="button">English</button>
-            <button class="ghost" id="lang-hi" type="button">हिन्दी</button>
-          </div>
-          ${consumerProgress({ fields: Object.fromEntries(Object.keys(scores).map(k => [k, true])) }, null)}
-          <h2 id="consumer-prompt">${me.greeting || 'Tap Talk to begin.'}</h2>
-          <p class="intake-status" id="consumer-status">${me.disclaimer}</p>
-        </div>
-        <div class="agent-report ${phase === 'report' ? 'hot' : ''}" id="report-panel">
-          <h3>Report OCR</h3>
-          <p>After the six questions, photograph a clinic printout. OCR keeps only clearly printed numbers.</p>
-          <label class="report-upload">
-            <input type="file" id="report-file" accept="image/*" capture="environment" hidden>
-            <span>Upload report photo</span>
-          </label>
-          <button class="ghost" id="report-skip" type="button">Skip report</button>
-          <p class="intake-status" id="report-status"></p>
-        </div>
+      <button type="button" class="talk-orb" id="voice-dock" aria-label="Start Talk">
+        <span class="talk-orb-ring" aria-hidden="true"></span>
+        <span class="talk-orb-core" aria-hidden="true"></span>
+        <strong id="voice-dock-title">Talk</strong>
+        <em id="voice-dock-hint">Tap — I ask what we still need</em>
+      </button>
+      <p class="talk-live" id="consumer-prompt" hidden></p>
+      <p class="talk-live sub" id="consumer-status" hidden></p>
+      <div class="talk-lang">
+        <button class="ghost" id="lang-en" type="button">EN</button>
+        <button class="ghost" id="lang-hi" type="button">हि</button>
+      </div>
+      <div class="agent-report compact ${phase === 'report' ? 'hot show' : ''}" id="report-panel" ${phase === 'report' ? '' : 'hidden'}>
+        <label class="report-upload">
+          <input type="file" id="report-file" accept="image/*" capture="environment" hidden>
+          <span>Upload report</span>
+        </label>
+        <button class="ghost" id="report-skip" type="button">Skip</button>
+        <p class="intake-status" id="report-status"></p>
       </div>
     </section>`,
   }, '#/app');
-  const setLang = next => {
-    if (language === next) return;
-    language = next;
-    window.RehabVoiceLang = language;
-    if (window.RehabVoiceAgent?.isTalking?.()) window.RehabVoiceAgent.restart?.();
+  const showLive = (spoken, status) => {
+    const prompt = document.getElementById('consumer-prompt');
+    const st = document.getElementById('consumer-status');
+    if (prompt && spoken) {
+      prompt.hidden = false;
+      prompt.textContent = spoken;
+    }
+    if (st && status) {
+      st.hidden = false;
+      st.textContent = status;
+    }
   };
-  $('#lang-en')?.addEventListener('click', () => setLang('en-IN'));
-  $('#lang-hi')?.addEventListener('click', () => setLang('hi-IN'));
+  window.RehabConsumerLive = { showLive };
+  $('#lang-en')?.addEventListener('click', () => {
+    window.RehabVoiceLang = 'en-IN';
+    if (window.RehabVoiceAgent?.isTalking?.()) window.RehabVoiceAgent.restart?.();
+  });
+  $('#lang-hi')?.addEventListener('click', () => {
+    window.RehabVoiceLang = 'hi-IN';
+    if (window.RehabVoiceAgent?.isTalking?.()) window.RehabVoiceAgent.restart?.();
+  });
   $('#report-skip')?.addEventListener('click', async () => {
     try {
-      $('#report-status').textContent = 'Skipping…';
-      const res = await api('consumer/report-skip', {});
-      $('#report-status').textContent = res.spoken || 'Opening dashboard';
+      await api('consumer/report-skip', {});
       goto('#/app/home');
     } catch (e) {
       $('#report-status').textContent = e.message;
@@ -357,7 +356,7 @@ async function renderConsumerTalk() {
   $('#report-file')?.addEventListener('change', async ev => {
     const file = ev.target.files && ev.target.files[0];
     if (!file) return;
-    $('#report-status').textContent = 'Scanning with OCR…';
+    $('#report-status').textContent = 'Scanning…';
     try {
       const body = new FormData();
       body.append('file', file, file.name || 'report.jpg');
@@ -366,22 +365,13 @@ async function renderConsumerTalk() {
       const res = await fetch('/api/consumer/report-ocr', { method: 'POST', headers, body });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || 'OCR failed');
-      const m = (data.report && data.report.metrics) || {};
-      $('#report-status').textContent = data.spoken || (
-        `OCR ${data.report?.engine || ''}: abd ${m.abduction_deg ?? '—'}°, pain ${m.pain_score ?? '—'}`
-      );
-      if (data.spoken) {
-        try { await window.RehabIntake?.speak?.(data.spoken, language, { keepMic: true }); } catch {}
-      }
-      setTimeout(() => goto('#/app/home'), 600);
+      $('#report-status').textContent = data.spoken || 'Saved';
+      setTimeout(() => goto('#/app/home'), 500);
     } catch (e) {
       $('#report-status').textContent = e.message || 'OCR failed';
     }
   });
-  clearTimeout(window.__rehabAutoTalk);
-  window.__rehabAutoTalk = setTimeout(() => {
-    window.RehabVoiceAgent?.ensureTalking?.();
-  }, 350);
+  // Do not auto-start — user taps the big Talk orb.
 }
 
 async function renderConsumerHome() {
@@ -404,26 +394,26 @@ async function renderConsumerHome() {
   consumerShell({
     step: 2,
     body: `<section class="dash-slide">
-      <p class="eyebrow">${demo ? 'Personalized · demo seed labelled' : 'Personalized for you'}</p>
-      <h1>${name}'s shoulder record</h1>
-      <p class="lede">Built from your voice questionnaire${me.memory?.ocr_engine ? ' and OCR report' : ''}. Stored values only — no recovery percentage, no diagnosis.</p>
+      <p class="eyebrow">${demo ? 'Personalized · demo labelled' : 'Personalized for you'}</p>
+      <h1>${name}</h1>
+      <p class="lede">Your agent built this from the call${me.memory?.ocr_engine ? ' and OCR' : ''}. Stored values only — not a diagnosis.</p>
       <button class="primary start-giant" id="go">Start session</button>
       <p class="empty">${me.phone_pose_available
-        ? 'Phone pose model is available on the server.'
-        : 'Session runs as labelled simulation until a pose model is configured.'}</p>
+        ? 'Phone pose available on server.'
+        : 'Session is labelled simulation until a pose model is set.'}</p>
       <div class="person-kpis">
         <article><span>Abduction</span><strong>${abdNow == null ? '—' : Math.round(abdNow) + '°'}</strong><em>${demo ? 'Demo / stored' : 'Stored'}</em></article>
         <article><span>Pain on move</span><strong>${painNow == null ? '—' : painNow + '/10'}</strong><em>Voice</em></article>
         <article><span>Rest pain</span><strong>${scores.pain_rest == null ? '—' : scores.pain_rest + '/10'}</strong><em>Voice</em></article>
-        <article><span>OCR abd</span><strong>${me.memory?.ocr_abduction == null ? '—' : me.memory.ocr_abduction + '°'}</strong><em>${me.memory?.ocr_engine || 'No report'}</em></article>
+        <article><span>OCR</span><strong>${me.memory?.ocr_abduction == null ? '—' : me.memory.ocr_abduction + '°'}</strong><em>${me.memory?.ocr_engine || 'None'}</em></article>
       </div>
       <div class="person-charts">
         <div class="panel">
-          <div class="panel-head"><div><h2>Abduction trend</h2><p class="sub">${seriesCaption(me.abduction_series || [])}</p></div></div>
+          <div class="panel-head"><div><h2>Abduction</h2><p class="sub">${seriesCaption(me.abduction_series || [])}</p></div></div>
           ${chart(abdSeries, '#4d6848', true)}
         </div>
         <div class="panel mint">
-          <div class="panel-head"><div><h2>Pain on movement</h2><p class="sub">${painMove.length} stored scores</p></div></div>
+          <div class="panel-head"><div><h2>Pain</h2><p class="sub">${painMove.length} scores</p></div></div>
           ${barChart(painMove, '#4d6848')}
         </div>
       </div>
