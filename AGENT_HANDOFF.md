@@ -3,21 +3,25 @@
 ## User request and scope
 MEDHA PS 8 adhesive capsulitis assessment support — not a diagnosis service.
 
+## What’s left / open
+- Rebuild consumer APK when phones should pick up UI + FollowAvatar.
+- Optional: vendor Three.js offline for APK (currently CDN `unpkg.com/three@0.160.1`).
+- Optional Mixamo `web/models/guide.glb` still not wired (procedural FollowAvatar is the coach).
+
 ## Product decisions
-- **Hospital studio** at `/` unchanged for clinicians.
-- **Consumer app** (`/?consumer=1#/app`) talk-first two-slide flow.
-- **Claude is the voice agent brain** (`ANTHROPIC_MODEL`, default `claude-sonnet-5`): plans next spoken questions / rephrases from missing PS slots. Opt out only with `REHABAI_CONSUMER_CLAUDE=0`.
-- **Numbers stay deterministic** from patient words — Claude never invents scores.
-- Latency opts that do **not** downgrade Claude: one-turn number save (skip confirm), single STT engine, tighter VAD. Cloud TTS (Sarvam) restored for voice quality.
-- Railway: https://rehabai-api-production.up.railway.app
+- Consumer Talk: Claude agent + deterministic scores + personalized dashboard.
+- **3D coach** replaced with rehab.ai **FollowAvatar** (Three.js mannequin + motion maths + goniometer). Live telemetry angle overlays on the arc; LLM never poses the mesh.
+- Source dumps kept as `*.txt` in repo root for reference; runtime is `web/motion.js`, `web/follow_avatar.js`, `web/guide_follow.js`.
 
 ## This stage
-- Restored Claude-on-by-default after a speed pass had disabled it.
-- Restored cloud TTS (`speak=1`).
-- Cache `?v=28`.
+- Ported `motion.ts` / `FollowAvatar.ts` / React view → vanilla ES modules.
+- Session layout: guide panel is a host div (not canvas-2d).
+- `tests/test_motion.py` covers motion maths.
+- Cache `?v=29` / `nura15`.
 
 ## Verification
-- `python -m unittest tests.test_consumer tests.test_voice -v`
+- `python -m unittest tests.test_motion tests.test_consumer -v`
+- `node --check web/motion.js web/follow_avatar.js web/guide_follow.js`
 
 ## Next
-Redeploy Railway after push.
+Redeploy Railway after push so production loads FollowAvatar.

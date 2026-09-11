@@ -129,6 +129,20 @@ function goto(hash) {
   location.hash = hash;
 }
 
+function mountGuide(selector, meta) {
+  if (meta?.exercise) window.RehabGuideExercise = meta.exercise;
+  if (meta?.target != null) window.RehabGuideTarget = meta.target;
+  if (meta?.side) window.RehabGuideSide = meta.side;
+  const tryMount = (n) => {
+    if (window.RehabGuide?.mount) {
+      window.RehabGuide.mount(selector);
+      return;
+    }
+    if (n < 40) setTimeout(() => tryMount(n + 1), 50);
+  };
+  tryMount(0);
+}
+
 function isConsumerMode() {
   const hash = location.hash || '';
   if (hash.startsWith('#/app')) return true;
@@ -781,8 +795,8 @@ async function renderLive(sessionId, opts = {}) {
           <canvas id="skel" width="640" height="480" class="${session.source === 'phone' ? 'phone-overlay phone-mirror' : ''}"></canvas>
         </div>
         <div class="view guide">
-          <div class="view-label">3D GUIDE · COPY THIS · NOT THE PATIENT</div>
-          <canvas id="guide3d" width="640" height="480"></canvas>
+          <div class="view-label">3D GUIDE · FOLLOW ALONG · NOT A DIAGNOSIS</div>
+          <div id="guide3d" class="guide-host" data-exercise="${session.exercise_id}" data-target="${session.target}" data-side="${session.side || 'right'}"></div>
         </div>
         <div>
           <div class="intake-panel" id="intake-panel">
@@ -848,7 +862,11 @@ async function renderLive(sessionId, opts = {}) {
       </div>`
   }, '#/patients');
   liveCanvas = $('#skel');
-  window.RehabGuide?.mount('#guide3d');
+  mountGuide('#guide3d', {
+    exercise: session.exercise_id,
+    target: session.target,
+    side: session.side || 'right',
+  });
 
   function showPhase() {
     $('#intake-panel').hidden = phase !== 'intake';
@@ -1426,11 +1444,11 @@ async function renderRecording(id) {
     <p>${row.seeded ? 'Seeded demo pointer — no binary video is stored.' : 'Telemetry replay from consented session. Video binaries are stored on disk, not in the database.'}</p>
     <div class="grid-live">
       <div class="view"><canvas id="skel" width="640" height="480"></canvas></div>
-      <div class="view guide"><canvas id="guide3d" width="640" height="480"></canvas></div>
+      <div class="view guide"><div id="guide3d" class="guide-host" data-exercise="shoulder_abduction" data-target="90" data-side="right"></div></div>
     </div>
     <p id="fb" class="feedback"></p></div>` }, '#/recordings');
   liveCanvas = $('#skel');
-  window.RehabGuide?.mount('#guide3d');
+  mountGuide('#guide3d', { exercise: 'shoulder_abduction', target: 90, side: 'right' });
   const samples = row.samples || [];
   let i = 0;
   const tick = () => {
@@ -1455,7 +1473,7 @@ async function renderSettings() {
     <p>Live mode never silently falls back to synthetic values. A live camera never receives a simulated IMU.</p>
     <p>LLM server is optional. ROM, reps and safety continue if the GPU/LLM host is down.</p>
     <p>The Talk button starts a live call. RehabAI keeps listening and answering until you tap again or say you are done. Replies use Sarvam first for speed; ElevenLabs is skipped after a failed paid-voice attempt. Step 3 is an allowlisted in-page browser action (Playwright-style selectors). The model never receives the page or identifiers.</p>
-    <p>The 3D coach uses Mixamo / Ready Player Me bone names (same as <code>hmthanh/3d-human-model</code>). Joints are driven by telemetry, not the LLM. The LLM may only rephrase the on-screen cue. Drop an optional Mixamo-rigged <code>web/models/guide.glb</code> later; do not commit someone else's photogrammetry.</p>
+    <p>The 3D coach is a procedural Three.js follow-along mannequin (rehab.ai motion + goniometer arc). It demonstrates the approved target for the selected exercise and mirrors the affected side. Live patient angle from telemetry is shown on the arc — the LLM never poses the mesh. Optional Mixamo <code>web/models/guide.glb</code> remains unsupported in this build; do not commit someone else's photogrammetry.</p>
   </div>` }, '#/settings');
 }
 

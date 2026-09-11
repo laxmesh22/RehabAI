@@ -7,13 +7,20 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/ui/style.css?v=nura14">
+  <link rel="stylesheet" href="/ui/style.css?v=nura15">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.1/build/three.module.js"
+    }
+  }
+  </script>
 </head>
 <body>
   <div id="app"><p class="boot">Loading RehabAI…</p></div>
-  <script src="/ui/guide3d.js?v=28" defer></script>
-  <script src="/ui/intake.js?v=28" defer></script>
-  <script src="/ui/voice_agent.js?v=28" defer></script>
-  <script src="/ui/app.js?v=28" defer></script>
+  <script type="module" src="/ui/guide_follow.js?v=29"></script>
+  <script src="/ui/intake.js?v=29" defer></script>
+  <script src="/ui/voice_agent.js?v=29" defer></script>
+  <script src="/ui/app.js?v=29" defer></script>
 </body>
 </html>
