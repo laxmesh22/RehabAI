@@ -123,10 +123,9 @@
 
   async function askServer(wav) {
     const body = new FormData();
-    const scene = sessionContext().scene;
     body.append('language', language());
-    // Consumer: skip cloud TTS — browser speech is much faster; keep cloud for studio.
-    body.append('speak', scene === 'consumer' ? '0' : '1');
+    // Cloud TTS (Sarvam) for voice quality; Claude plans the spoken words server-side.
+    body.append('speak', '1');
     body.append('context', JSON.stringify(sessionContext()));
     const pid = patientId();
     if (pid) body.append('patient_id', pid);

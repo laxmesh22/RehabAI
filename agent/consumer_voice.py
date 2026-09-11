@@ -1,7 +1,9 @@
-"""Fast consumer voice agent for MEDHA PS 8 shoulder assessment support.
+"""Claude-driven consumer voice agent for MEDHA PS 8 shoulder assessment support.
 
-Hot path is local: short prompts from missing PS slots + deterministic number parsing.
-Claude is optional (REHABAI_CONSUMER_CLAUDE=1) and never invents scores.
+Claude plans spoken questions from missing PS slots (same configured ANTHROPIC_MODEL).
+Numeric scores stay deterministic from the patient's words — never invented by the LLM.
+Latency opts that do *not* downgrade the model: one-turn number save, single STT engine.
+Set REHABAI_CONSUMER_CLAUDE=0 only to force local prompt fallback.
 """
 from __future__ import annotations
 
@@ -20,8 +22,9 @@ from backend.memory import (
 from agent.live_voice import _wants_end, _wants_pause
 from agent.retrieval import patient_memory_for_agent, sanitize_memory_slice
 
-# Default off — Claude adds 1–3s+ per turn. Enable only when you want freer wording.
-CONSUMER_CLAUDE = os.environ.get('REHABAI_CONSUMER_CLAUDE', '').strip().lower() in ('1', 'true', 'yes')
+# Claude ON by default when a key exists. Opt out with REHABAI_CONSUMER_CLAUDE=0.
+_CONSUMER_CLAUDE_FLAG = os.environ.get('REHABAI_CONSUMER_CLAUDE', '1').strip().lower()
+CONSUMER_CLAUDE = _CONSUMER_CLAUDE_FLAG not in ('0', 'false', 'no', 'off')
 
 PS_GOALS = (
     'pain_rest (0-10)',
@@ -34,9 +37,14 @@ PS_GOALS = (
 )
 
 SYSTEM = (
-    'You are RehabAI, a brief voice agent for MEDHA PS 8 assessment support. '
-    'NOT a diagnosis service. Never invent ROM, pain, or function scores. '
-    'Speak under 18 words. Return JSON only: '
+    'You are RehabAI, the autonomous voice agent inside a patient phone app for MEDHA PS 8 '
+    '(adhesive capsulitis assessment *support* and guided rehab). '
+    'This is NOT a diagnosis service. Never name a disease as confirmed. Never invent ROM, pain, or function scores. '
+    'Decide the next spoken question dynamically from what is still missing in the slot list. '
+    'Speak briefly but naturally (under 28 words). Match the requested language. '
+    'When you need a number, ask in plain language; do not invent it. '
+    'When enough slots are filled, set need_report true so the app can collect a report photo. '
+    'Return JSON only: '
     '{"spoken":"...","focus_field":"pain_rest|pain_movement|difficulty_dressing|difficulty_grooming|'
     'difficulty_overhead|difficulty_behind_back|null","need_report":false,"open_dashboard":false}.'
 )
@@ -148,18 +156,30 @@ async def _claude_next_turn(
         'language': language,
         'missing_slots': missing,
         'filled_scores': filled,
-        'patient_said': (transcript or '')[:200],
+        'patient_said': (transcript or '')[:400],
+        'stored_metrics': {
+            'abduction': memory_slice.get('stored_abduction'),
+            'pain_movement': memory_slice.get('stored_pain_movement'),
+            'ocr_abduction': memory_slice.get('ocr_abduction'),
+        },
         'ps_goals': list(PS_GOALS),
-        'rules': ['Ask only missing slots.', 'Never invent a number.', 'Under 18 words.'],
+        'model': ANTHROPIC_MODEL,
+        'rules': [
+            'Ask only for missing slots or report upload.',
+            'Never invent a number.',
+            'Do not diagnose frozen shoulder.',
+            'Keep spoken under 28 words.',
+            'If the patient was unclear, briefly re-ask the focused missing slot.',
+        ],
     }
     body = {
         'model': ANTHROPIC_MODEL,
-        'max_tokens': 100,
+        'max_tokens': 220,
         'system': SYSTEM,
         'messages': [{'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)}],
     }
     try:
-        async with httpx.AsyncClient(timeout=min(6.0, VOICE_TIMEOUT_S)) as client:
+        async with httpx.AsyncClient(timeout=min(12.0, VOICE_TIMEOUT_S)) as client:
             response = await client.post(
                 f'{ANTHROPIC_BASE_URL}/v1/messages',
                 headers={
@@ -180,7 +200,7 @@ async def _claude_next_turn(
             if raw.startswith('json'):
                 raw = raw[4:].strip()
         data = json.loads(raw)
-        spoken = ' '.join(str(data.get('spoken') or '').split())[:180]
+        spoken = ' '.join(str(data.get('spoken') or '').split())[:280]
         focus = data.get('focus_field')
         if focus not in INTAKE_FIELDS:
             focus = missing[0] if missing else None
@@ -305,7 +325,7 @@ async def consumer_reply(
     awaiting = bool(awaiting_confirm and pending_value is not None)
     filled = {fid: intake.get(fid) for fid in INTAKE_FIELDS if isinstance(intake.get(fid), int)}
 
-    # Opening turn — local short ask (no Claude delay)
+    # Opening turn — Claude plans the first ask when configured; local fallback otherwise
     if not text and not awaiting:
         plan = await _plan_next(
             language=spoken_language, missing=missing, filled=filled,
@@ -367,18 +387,42 @@ async def consumer_reply(
         return await _after_save(int(pending_value), text)
 
     if awaiting and intent == 'confirm_no':
-        spoken = 'ठीक है, नंबर फिर से।' if hindi else 'Okay, say the number again.'
+        plan = await _claude_next_turn(
+            language=spoken_language, missing=missing, filled=filled,
+            transcript=text, memory_slice=memory_slice,
+        )
+        spoken = (plan or {}).get('spoken') or (
+            'ठीक है, नंबर फिर से।' if hindi else 'Okay, say the number again.'
+        )
         return {
-            'spoken': spoken, 'action': 'none', 'engine': 'consumer-retry',
+            'spoken': spoken, 'action': 'none',
+            'engine': (plan or {}).get('engine') or 'consumer-retry',
             'intake': intake, 'intake_field': field, 'awaiting_confirm': False,
             'pending_value': None, 'parsed': parsed, 'memory': memory_slice, 'phase': 'questionnaire',
         }
 
-    # Fast path: clear number → save + next question in one turn (no confirm round-trip)
+    # Clear number → save + Claude asks next (still one patient turn; model not skipped)
     if intent == 'number' and parsed.get('parsed_value') is not None:
         return await _after_save(int(parsed['parsed_value']), text)
 
-    # Unclear — short local reask (no Claude)
+    # Unclear — Claude rephrases; local short reask only if Claude unavailable
+    plan = await _claude_next_turn(
+        language=spoken_language, missing=missing or [field], filled=filled,
+        transcript=text, memory_slice=memory_slice,
+    )
+    if plan:
+        return {
+            'spoken': plan['spoken'],
+            'action': 'none',
+            'engine': plan.get('engine') or 'consumer-autonomous',
+            'intake': intake,
+            'intake_field': plan.get('focus_field') or field,
+            'awaiting_confirm': False,
+            'pending_value': None,
+            'parsed': parsed,
+            'memory': memory_slice,
+            'phase': 'questionnaire',
+        }
     return {
         'spoken': _reask(field, spoken_language),
         'action': 'none',

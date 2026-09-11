@@ -646,11 +646,7 @@ async def voice_agent(
     audio_b64 = None
     media_type = None
     tts_engine = 'browser-speech'
-    # Consumer Talk uses on-device speech by default — cloud TTS adds seconds per turn.
     want_tts = str(speak or '0').strip().lower() in ('1', 'true', 'yes')
-    if ctx.get('scene') == 'consumer' and str(speak or '1').strip() in ('', '1', 'true', 'yes'):
-        # Client sends speak=0 for speed; if it still asks for cloud TTS, keep replies short.
-        spoken = ' '.join(str(spoken).split())[:180]
     if want_tts:
         try:
             wav, media_type = await synthesize_speech(spoken, language)
