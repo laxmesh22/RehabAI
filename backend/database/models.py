@@ -125,6 +125,8 @@ class Session(Base):
     coverage = mapped_column(Float, nullable=True)
     pain_before = mapped_column(Integer, nullable=True)
     pain_after = mapped_column(Integer, nullable=True)
+    kind = mapped_column(String, default='rehab')  # assessment | rehab
+    intake = mapped_column(JSON, nullable=True)
     safety_outcome = mapped_column(String, default='ALLOW')
     status = mapped_column(String, default='active')
     duration_s = mapped_column(Float, nullable=True)

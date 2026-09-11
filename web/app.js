@@ -86,7 +86,7 @@ function shell(content, active) {
   const nav = (state.user.role === 'PATIENT' ? routes.patient : routes.clinician)
     .filter(item => state.user.role === 'ADMIN' || item[0] !== '#/staff' || state.user.role === 'ADMIN')
     .map(([href, label]) => `<a class="${active === href ? 'active' : ''}" href="${href}">${label}</a>`).join('');
-  const mode = state.health?.source === 'live' ? 'Live camera · unvalidated' : 'Simulation mode';
+  const mode = modeLabel(state.health);
   app.innerHTML = `<div class="app-shell">
     <aside class="rail">
       <div class="brand"><strong>RehabAI</strong><span>studio</span></div>
@@ -223,9 +223,12 @@ async function renderPatient(id) {
         ${p.demo_records_present ? '<p class="badge demo">Includes labelled demo / synthetic records</p>' : ''}
       </div>`;
     } else if (state.tab === 'assessment') {
-      tabEl.innerHTML = `<div class="panel">${table(['Date','Source','Abd','Flex','Pain','Lean'], assessments.map(a => [
+      tabEl.innerHTML = `<div class="panel">${table(['Date','Source','Abd','Flex','Rest','Move','Dress','Groom','Over','Back'], assessments.map(a => [
         new Date(a.created_at).toLocaleDateString(), a.source, deg(a.abduction_max), deg(a.flexion_max),
-        a.pain_movement + '/10', deg(a.torso_compensation)
+        a.pain_rest == null ? '—' : a.pain_rest + '/10',
+        a.pain_movement == null ? '—' : a.pain_movement + '/10',
+        a.difficulty_dressing ?? '—', a.difficulty_grooming ?? '—',
+        a.difficulty_overhead ?? '—', a.difficulty_behind_back ?? '—'
       ]))}</div>`;
     } else if (state.tab === 'ROM' || state.tab === 'progress') {
       tabEl.innerHTML = `<div class="grid-2">
@@ -258,70 +261,269 @@ async function renderPatient(id) {
 async function startLive(patientId, exercise, assessment) {
   const session = await api('sessions', {
     patient_id: patientId, exercise_id: exercise, side: 'right', target: 80, goal: 5,
-    pain_before: 4, consent_recording: true, kind: assessment ? 'assessment' : 'rehab'
+    consent_recording: true, kind: assessment ? 'assessment' : 'rehab'
   });
   goto('#/live/' + session.id);
 }
 
 async function renderLive(sessionId, opts = {}) {
-  const session = await api('sessions/' + sessionId);
+  const [session, script] = await Promise.all([api('sessions/' + sessionId), api('intake/script')]);
   closeLive();
+  const voice = window.RehabIntake || {};
+  const fields = script.fields || [];
+  const needsIntake = session.kind === 'assessment' && !session.intake?.confirmed;
+  let language = session.intake?.language || 'en-IN';
+  let index = Math.max(0, fields.findIndex(f => !(session.intake?.fields || {})[f.id]));
+  let pending = null;
+  let listening = false;
+  let paused = false;
+  let phase = needsIntake ? 'intake' : 'measure';
+  let painAfter = null;
+
+  const current = () => fields[index];
+  const promptOf = f => (language === 'hi-IN' ? f.prompt_hi : f.prompt_en);
+  const confirmOf = (f, value) => (language === 'hi-IN' ? f.confirm_hi : f.confirm_en).replace('{value}', value);
+
   shell({
-    header: `<p class="eyebrow">Live ${session.source === 'live' ? 'camera' : 'simulation'}</p>
+    header: `<p class="eyebrow">Live ${session.source === 'live' ? 'RealSense' : 'simulation'} + arm IMU</p>
       <h1 class="serif">${session.exercise_id.replaceAll('_',' ')}</h1>`,
     body: `<div class="checks" id="calib"></div>
       <div class="grid-live">
         <div class="view">
-          <div class="view-label" id="view-label">${session.source === 'live' ? 'LIVE RGB-D · POSE OVERLAY' : 'SYNTHETIC SKELETON · NOT A CAMERA FEED'}</div>
+          <div class="view-label" id="view-label">${session.source === 'live' ? 'LIVE RGB-D · POSE OVERLAY' : 'SYNTHETIC RGB-D + ARM IMU · NOT LIVE SENSORS'}</div>
           <canvas id="skel" width="640" height="480"></canvas>
         </div>
         <div>
-          <div class="metrics">
-            <div class="metric"><span>Current ROM</span><b id="ang">—°</b></div>
-            <div class="metric"><span>Target</span><b>${session.target}°</b></div>
-            <div class="metric"><span>Reps</span><b id="reps" data-goal="${session.goal}">0 / ${session.goal}</b></div>
-            <div class="metric"><span>Torso lean</span><b id="lean">—°</b></div>
-            <div class="metric"><span>Tracking</span><b id="conf">—</b></div>
-            <div class="metric"><span>Quality</span><b id="cov">—</b></div>
+          <div class="intake-panel" id="intake-panel">
+            <p class="eyebrow">Voice intake · not a diagnosis</p>
+            <p class="empty">${script.disclaimer}</p>
+            <div class="row">
+              <button class="ghost" id="lang-en" type="button">English</button>
+              <button class="ghost" id="lang-hi" type="button">हिन्दी</button>
+            </div>
+            <div class="intake-progress" id="intake-progress"></div>
+            <h2 id="intake-q"></h2>
+            <p class="intake-status" id="intake-status"></p>
+            <p class="intake-status" id="heard"></p>
+            <div id="chips"></div>
+            <div class="row">
+              <button class="primary mic-btn" id="mic" type="button">Speak</button>
+              <button class="primary" id="yes" type="button" hidden>Yes, save</button>
+              <button class="ghost" id="no" type="button" hidden>No, again</button>
+            </div>
           </div>
-          <p class="feedback" id="fb">Stand in the marked area. Hold a relaxed posture.</p>
-          <p id="sub" class="empty"></p>
-          <div class="row">
-            <label class="field" style="margin:0">Pain after <input id="pain-after" type="number" min="0" max="10" value="4" style="width:72px"></label>
-            <button class="primary" id="confirm">Confirm tracking & start</button>
-            <button class="danger" id="finish">Stop & save</button>
+          <div id="measure-block">
+            <div class="metrics">
+              <div class="metric"><span>Current ROM</span><b id="ang">—°</b></div>
+              <div class="metric"><span>Target</span><b>${session.target}°</b></div>
+              <div class="metric"><span>Reps</span><b id="reps" data-goal="${session.goal}">0 / ${session.goal}</b></div>
+              <div class="metric"><span>Torso lean</span><b id="lean">—°</b></div>
+              <div class="metric"><span>Tracking</span><b id="conf">—</b></div>
+              <div class="metric"><span>Quality</span><b id="cov">—</b></div>
+              <div class="metric"><span>Arm IMU</span><b id="imu">—</b></div>
+              <div class="metric"><span>Fused ROM</span><b id="fused">—</b></div>
+            </div>
+            <p class="feedback" id="fb">Stand in the marked area. Hold a relaxed posture.</p>
+            <p id="sub" class="empty"></p>
+            <div class="row">
+              <button class="primary" id="confirm">Confirm tracking & start</button>
+              <button class="danger" id="finish">Stop & save</button>
+            </div>
+            ${session.source === 'simulation' ? `<div class="row" style="margin-top:12px">
+              <span class="eyebrow">Simulation controls</span>
+              <button class="ghost" data-fault="none">Normal</button>
+              <button class="ghost" data-fault="lean">Lean sideways</button>
+              <button class="ghost" data-fault="occlusion">Tracking lost</button>
+              <button class="ghost" data-fault="imu_drop">Drop IMU</button>
+            </div>` : ''}
           </div>
-          ${session.source === 'simulation' ? `<div class="row" style="margin-top:12px">
-            <span class="eyebrow">Simulation controls</span>
-            <button class="ghost" data-fault="none">Normal</button>
-            <button class="ghost" data-fault="lean">Lean sideways</button>
-            <button class="ghost" data-fault="occlusion">Tracking lost</button>
-          </div>` : ''}
+          <div class="intake-panel" id="debrief-panel" hidden>
+            <p class="eyebrow">After this session</p>
+            <h2>Pain after movement, 0 to 10</h2>
+            <p class="intake-status" id="debrief-status">Tap a number or speak. There is no default score.</p>
+            <div id="debrief-chips"></div>
+            <div class="row">
+              <button class="primary mic-btn" id="debrief-mic" type="button">Speak</button>
+              <button class="danger" id="debrief-save" type="button">Save session</button>
+            </div>
+          </div>
         </div>
       </div>`
   }, '#/patients');
   liveCanvas = $('#skel');
+
+  function showPhase() {
+    $('#intake-panel').hidden = phase !== 'intake';
+    $('#measure-block').hidden = phase !== 'measure';
+    $('#debrief-panel').hidden = phase !== 'debrief';
+  }
+
+  function paintChips(host, max, kind) {
+    const labels = kind === 'function'
+      ? ['0 none', '1 mild', '2 moderate', '3 severe', '4 unable']
+      : Array.from({ length: max + 1 }, (_, i) => String(i));
+    host.innerHTML = `<div class="scale-chips">${labels.map((label, i) => `<button type="button" data-val="${i}">${label}</button>`).join('')}</div>`;
+  }
+
+  function paintIntake(speakPrompt) {
+    const f = current();
+    if (!f) return;
+    $('#lang-en').classList.toggle('primary', language === 'en-IN');
+    $('#lang-hi').classList.toggle('primary', language === 'hi-IN');
+    $('#intake-q').textContent = paused ? 'Session paused' : promptOf(f);
+    $('#intake-status').textContent = paused
+      ? 'Please stop. Rest the arm. A physiotherapist should review before you continue.'
+      : pending != null
+        ? confirmOf(f, pending)
+        : (voice.canListen && voice.canListen() ? 'Tap a number or press Speak.' : 'Tap a number. Voice needs Chrome or Edge on this workstation.');
+    $('#intake-progress').innerHTML = fields.map((item, i) => {
+      const saved = Boolean((session.intake?.fields || {})[item.id]);
+      return `<span class="${saved ? 'on' : ''} ${i === index && !saved ? 'now' : ''}"></span>`;
+    }).join('');
+    paintChips($('#chips'), f.max, f.kind);
+    $('#yes').hidden = pending == null || paused;
+    $('#no').hidden = pending == null || paused;
+    $('#mic').disabled = paused;
+    $('#chips').querySelectorAll('button').forEach(btn => {
+      btn.disabled = paused;
+      btn.addEventListener('click', () => saveField(Number(btn.dataset.val), 'tap'));
+    });
+    if (speakPrompt && !paused && pending == null) voice.speak?.(promptOf(f), language);
+  }
+
+  async function saveField(value, source, transcript) {
+    if (paused) return;
+    const f = current();
+    const res = await api(`sessions/${sessionId}/intake`, {
+      field: f.id, value, source, transcript: transcript || undefined, language
+    });
+    session.intake = res.intake;
+    pending = null;
+    $('#heard').textContent = '';
+    if (res.intake.confirmed) {
+      phase = 'measure';
+      showPhase();
+      voice.speak?.('Thank you. Stand on the mark. This is not a diagnosis. We will measure movement.', language);
+      return;
+    }
+    index = Math.max(0, fields.findIndex(item => !(res.intake.fields || {})[item.id]));
+    paintIntake(true);
+  }
+
+  async function hearIntake() {
+    if (!voice.listen || paused || listening) return;
+    listening = true;
+    $('#mic').classList.add('hot');
+    $('#heard').textContent = 'Listening…';
+    try {
+      const text = await voice.listen(language);
+      $('#heard').textContent = text ? ('Heard: ' + text) : 'No speech captured.';
+      if (!text) return;
+      const parsed = await api('intake/parse', { field: current().id, text, awaiting_confirm: pending != null });
+      if (parsed.intent === 'safety_pause') {
+        paused = true;
+        pending = null;
+        paintIntake(false);
+        voice.speak?.(parsed.spoken, language);
+        return;
+      }
+      if (parsed.intent === 'confirm_yes' && pending != null) {
+        await saveField(pending, 'voice', text);
+        return;
+      }
+      if (parsed.intent === 'confirm_no') {
+        pending = null;
+        paintIntake(true);
+        return;
+      }
+      if (parsed.intent === 'number') {
+        pending = parsed.parsed_value;
+        paintIntake(false);
+        voice.speak?.(confirmOf(current(), pending), language);
+        return;
+      }
+      $('#intake-status').textContent = parsed.spoken;
+    } catch (err) {
+      $('#heard').textContent = err.message;
+    } finally {
+      listening = false;
+      $('#mic').classList.remove('hot');
+    }
+  }
+
+  function openDebrief() {
+    phase = 'debrief';
+    painAfter = null;
+    showPhase();
+    paintChips($('#debrief-chips'), 10, 'pain');
+    $('#debrief-chips').querySelectorAll('button').forEach(btn => btn.addEventListener('click', () => {
+      painAfter = Number(btn.dataset.val);
+      $('#debrief-chips').querySelectorAll('button').forEach(b => b.classList.toggle('active', b === btn));
+      $('#debrief-status').textContent = 'Pain after ' + painAfter + ' out of 10. Press Save session to store it.';
+    }));
+    voice.speak?.('Pain after this session, zero to ten?', language);
+  }
+
+  async function saveSession() {
+    if (!Number.isInteger(painAfter) || painAfter < 0 || painAfter > 10) {
+      $('#debrief-status').textContent = 'Choose pain after from 0 to 10. Nothing is filled in for you.';
+      return;
+    }
+    await api(`sessions/${sessionId}/finish`, {
+      pain_after: painAfter,
+      create_assessment: session.kind === 'assessment',
+    });
+    closeLive();
+    state.tab = 'assessment';
+    goto('#/patients/' + session.patient_id);
+  }
+
+  showPhase();
+  if (phase === 'intake') paintIntake(true);
+  else $('#intake-panel').hidden = true;
+  const voiceOk = Boolean(voice.canListen && voice.canListen());
+  if ($('#mic')) $('#mic').hidden = !voiceOk;
+  if ($('#debrief-mic')) $('#debrief-mic').hidden = !voiceOk;
+
+  $('#lang-en').addEventListener('click', () => { language = 'en-IN'; paintIntake(true); });
+  $('#lang-hi').addEventListener('click', () => { language = 'hi-IN'; paintIntake(true); });
+  $('#mic').addEventListener('click', hearIntake);
+  $('#yes').addEventListener('click', () => pending != null && saveField(pending, 'voice'));
+  $('#no').addEventListener('click', () => { pending = null; paintIntake(true); });
   $('#confirm').addEventListener('click', async () => {
     try { await api(`sessions/${sessionId}/confirm`, {}); }
     catch (e) { $('#sub').textContent = e.message; }
   });
-  $('#finish').addEventListener('click', async () => {
-    const pain = Number($('#pain-after').value);
-    if (!Number.isInteger(pain) || pain < 0 || pain > 10) { $('#sub').textContent = 'Enter pain 0–10 before saving.'; return; }
-    const result = await api(`sessions/${sessionId}/finish`, {
-      pain_after: pain, create_assessment: true, pain_rest: Math.max(0, pain - 2),
-      difficulty_overhead: 2, difficulty_behind_back: 2, difficulty_dressing: 1, difficulty_grooming: 1
-    });
-    closeLive();
-    state.tab = 'progress';
-    goto('#/patients/' + session.patient_id);
+  $('#finish').addEventListener('click', openDebrief);
+  $('#debrief-save').addEventListener('click', () => saveSession().catch(err => { $('#debrief-status').textContent = err.message; }));
+  $('#debrief-mic').addEventListener('click', async () => {
+    if (!voice.listen) return;
+    $('#debrief-status').textContent = 'Listening…';
+    try {
+      const text = await voice.listen(language);
+      const parsed = await api('intake/parse', { field: 'pain_movement', text, awaiting_confirm: false });
+      if (parsed.intent === 'safety_pause') {
+        $('#debrief-status').textContent = parsed.spoken;
+        return;
+      }
+      if (parsed.intent === 'number') {
+        painAfter = parsed.parsed_value;
+        $('#debrief-status').textContent = 'Pain after ' + painAfter + ' out of 10. Press Save session to store it.';
+        $('#debrief-chips').querySelectorAll('button').forEach(b => b.classList.toggle('active', Number(b.dataset.val) === painAfter));
+        voice.speak?.('Pain after ' + painAfter + ' out of 10.', language);
+      } else {
+        $('#debrief-status').textContent = parsed.spoken;
+      }
+    } catch (err) {
+      $('#debrief-status').textContent = err.message;
+    }
   });
   document.querySelectorAll('[data-fault]').forEach(btn => btn.addEventListener('click', () => api(`sessions/${sessionId}/fault`, { fault: btn.dataset.fault })));
   connectLive(sessionId);
 }
 
 function connectLive(sessionId) {
-  closeLive();
+  closeLive({ keepVoice: true });
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}/api/ws/sessions/${sessionId}?token=${encodeURIComponent(state.token)}`);
   ws.onmessage = ev => applyTelemetry(JSON.parse(ev.data));
@@ -331,22 +533,44 @@ function connectLive(sessionId) {
 function applyTelemetry(row) {
   if (row.type === 'ended') return;
   const cal = row.calibration || {};
+  const imu = row.imu || {};
+  const imuChip = !imu.enabled || imu.source === 'off' ? 'Off' : (!imu.ok ? false : (imu.simulation ? 'SIM' : true));
   const checks = [
     ['Camera', cal.simulation ? 'SIM' : cal.camera_ok],
     ['Depth', cal.simulation ? 'SIM' : cal.depth_ok],
     ['Pose', cal.pose_ok],
     ['Distance', cal.distance_ok],
+    ['Arm IMU', imuChip],
   ];
   const calib = $('#calib');
-  if (calib) calib.innerHTML = checks.map(([n, ok]) => `<div class="check ${ok===true || ok==='SIM' ? 'on' : 'off'}"><strong>${n}</strong><div>${ok === 'SIM' ? 'Simulation' : ok ? 'OK' : 'Not ready'}</div></div>`).join('');
+  if (calib) calib.innerHTML = checks.map(([n, ok]) => `<div class="check ${ok===true || ok==='SIM' ? 'on' : 'off'}"><strong>${n}</strong><div>${ok === 'SIM' ? 'Simulation' : ok === 'Off' ? 'Off' : ok ? 'OK' : 'Not ready'}</div></div>`).join('');
   if ($('#ang')) $('#ang').textContent = row.valid ? Math.round(row.shoulder_angle) + '°' : '—';
   if ($('#lean')) $('#lean').textContent = Math.round(row.torso_lean || 0) + '°';
   if ($('#reps')) $('#reps').textContent = `${row.rep || 0} / ${$('#reps').dataset.goal}`;
   if ($('#conf')) $('#conf').textContent = Math.round((row.pose_confidence || 0) * 100) + '%';
   if ($('#cov')) $('#cov').textContent = (row.coverage ?? '—') + '%';
+  if ($('#imu')) $('#imu').textContent = imuChip === 'SIM' ? 'SIM' : (imu.ok ? Math.round(imu.gyro_norm || 0) + '°/s' : 'lost');
+  if ($('#fused')) $('#fused').textContent = imu.fused_angle != null ? Math.round(imu.fused_angle) + '°' : '—';
   if ($('#fb')) $('#fb').textContent = row.feedback || '';
-  if ($('#sub')) $('#sub').textContent = (row.safety?.level ? 'Safety ' + row.safety.level : '') + (row.source === 'simulation' ? ' · synthetic stream' : ' · live stream');
+  if ($('#sub')) $('#sub').textContent = (row.safety?.level ? 'Safety ' + row.safety.level : '') + (row.source === 'simulation' ? ' · synthetic RGB-D + IMU' : ' · live stream');
+  if ($('#view-label')) $('#view-label').textContent = streamCaption(row);
   drawSkeleton(row);
+}
+
+function modeLabel(health) {
+  if (health?.source === 'live') {
+    return health?.imu?.live_available ? 'Live RealSense + arm IMU · unvalidated' : 'Live camera · unvalidated';
+  }
+  return health?.imu?.transport === 'off' ? 'Simulation mode' : 'Simulation · RGB-D + arm IMU';
+}
+
+function streamCaption(row) {
+  const cam = row?.sensors?.camera || row?.source;
+  const imu = row?.sensors?.imu || row?.imu?.source;
+  if (cam === 'simulation') {
+    return imu === 'simulation' ? 'SYNTHETIC RGB-D + ARM IMU · NOT LIVE SENSORS' : 'SYNTHETIC SKELETON · NOT A CAMERA FEED';
+  }
+  return imu === 'live' ? 'LIVE RGB-D + ARM IMU · UNVALIDATED' : 'LIVE RGB-D · POSE OVERLAY';
 }
 
 function drawSkeleton(row) {
@@ -382,7 +606,8 @@ function drawSkeleton(row) {
   }
 }
 
-function closeLive() {
+function closeLive(opts = {}) {
+  if (!opts.keepVoice) window.RehabIntake?.stopVoice?.();
   if (wsTimer) clearTimeout(wsTimer);
   if (ws) { ws.onclose = null; ws.close(); ws = null; }
 }
@@ -479,7 +704,8 @@ async function renderStaff() {
 async function renderSettings() {
   shell({ header: `<h1 class="serif">Settings</h1>`, body: `<div class="panel">
     <p>Measurement source is selected at server start (<code>REHABAI_SOURCE=simulation|live</code>).</p>
-    <p>Live mode never silently falls back to synthetic values.</p>
+    <p>The station uses <strong>RealSense RGB-D</strong> for 3D ROM and an <strong>arm IMU</strong> for rate and movement quality. IMU packets are not used to diagnose frozen shoulder.</p>
+    <p>Live mode never silently falls back to synthetic values. A live camera never receives a simulated IMU.</p>
     <p>LLM server is optional. ROM, reps and safety continue if the GPU/LLM host is down.</p>
   </div>` }, '#/settings');
 }

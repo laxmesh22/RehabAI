@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
 from backend.config import DATA_DIR, DATABASE_URL
 from backend.database.models import Base
@@ -22,6 +22,24 @@ rebind(DATABASE_URL)
 
 def init_db():
     Base.metadata.create_all(engine)
+    _ensure_session_columns()
+
+
+def _ensure_session_columns():
+    inspector = inspect(engine)
+    if 'sessions' not in inspector.get_table_names():
+        return
+    existing = {col['name'] for col in inspector.get_columns('sessions')}
+    statements = []
+    if 'kind' not in existing:
+        statements.append('ALTER TABLE sessions ADD COLUMN kind VARCHAR DEFAULT \'rehab\'')
+    if 'intake' not in existing:
+        statements.append('ALTER TABLE sessions ADD COLUMN intake JSON')
+    if not statements:
+        return
+    with engine.begin() as conn:
+        for sql in statements:
+            conn.execute(text(sql))
 
 
 def get_db():

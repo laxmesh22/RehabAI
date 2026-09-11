@@ -17,3 +17,12 @@ POSE_MODEL = os.environ.get('REHABAI_POSE_MODEL', '')
 POSE_KIND = os.environ.get('REHABAI_POSE_KIND', 'mediapipe')
 POSE_DEVICE = os.environ.get('REHABAI_POSE_DEVICE', 'cpu')
 DEMO_PASSWORD = os.environ.get('REHABAI_DEMO_PASSWORD', 'rehabai-demo')
+IMU_TRANSPORT = os.environ.get('REHABAI_IMU_TRANSPORT', 'auto')  # auto | simulation | udp | serial | off
+IMU_UDP_HOST = os.environ.get('REHABAI_IMU_UDP_HOST', '127.0.0.1')
+IMU_UDP_PORT = int(os.environ.get('REHABAI_IMU_UDP_PORT', '8766'))
+IMU_SERIAL = os.environ.get('REHABAI_IMU_SERIAL', '')
+IMU_BAUD = int(os.environ.get('REHABAI_IMU_BAUD', '115200'))
+IMU_REQUIRED = os.environ.get('REHABAI_IMU_REQUIRED', '0').lower() in ('1', 'true', 'yes')
+IMU_PLACEMENTS = tuple(
+    part.strip() for part in os.environ.get('REHABAI_IMU_PLACEMENTS', 'arm').split(',') if part.strip()
+) or ('arm',)

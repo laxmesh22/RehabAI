@@ -29,6 +29,15 @@ def evaluate_safety(sample, context=None):
     if sample.get('camera_lost') or sample.get('source_error') == 'camera_lost':
         reasons.append('camera_lost')
         level = _raise(level, 'PAUSE')
+    if sample.get('imu_lost'):
+        reasons.append('imu_lost')
+        if sample.get('imu_required'):
+            level = _raise(level, 'PAUSE')
+        else:
+            level = _raise(level, 'WARN')
+    if sample.get('sensor_disagreement'):
+        reasons.append('sensor_disagreement')
+        level = _raise(level, 'WARN')
     if sample.get('depth_unavailable'):
         reasons.append('depth_unavailable')
         level = _raise(level, 'PAUSE')

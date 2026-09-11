@@ -4,7 +4,11 @@ import math
 import threading
 import time
 from pathlib import Path
-from backend.config import MEASUREMENT_SOURCE, POSE_DEVICE, POSE_KIND, POSE_MODEL, STORAGE_DIR
+from backend.config import (
+    IMU_BAUD, IMU_PLACEMENTS, IMU_REQUIRED, IMU_SERIAL, IMU_TRANSPORT,
+    IMU_UDP_HOST, IMU_UDP_PORT, MEASUREMENT_SOURCE, POSE_DEVICE, POSE_KIND, POSE_MODEL, STORAGE_DIR,
+)
+from edge.imu.device import open_imu, read_imu
 from edge.pipeline import VisionPipeline
 from edge.simulation import SimulatedPatient
 
@@ -18,6 +22,9 @@ class LiveHub:
         source = source or MEASUREMENT_SOURCE
         if source == 'live' and not POSE_MODEL:
             raise ValueError('Live mode requires REHABAI_POSE_MODEL')
+        imu = open_imu(source, IMU_TRANSPORT, IMU_UDP_HOST, IMU_UDP_PORT, IMU_SERIAL, IMU_BAUD, IMU_PLACEMENTS)
+        if IMU_REQUIRED and source == 'live' and imu is None:
+            raise ValueError('Live dual-sensor mode requires REHABAI_IMU_TRANSPORT=udp or serial')
         with self.lock:
             for item in self.sessions.values():
                 if item['status'] == 'running':
@@ -35,7 +42,7 @@ class LiveHub:
             state = {
                 'session_id': session_id, 'patient_id': patient_id, 'exercise_id': exercise_id, 'side': side,
                 'target': target, 'goal': goal, 'source': source, 'consent': consent, 'status': 'calibrating',
-                'pipeline': pipeline, 'actor': actor, 'capture': capture, 'history': [], 'fault': 'none',
+                'pipeline': pipeline, 'actor': actor, 'capture': capture, 'imu': imu, 'history': [], 'fault': 'none',
                 'stop': threading.Event(), 'started': now, 'motion_t0': now, 'blocked': False,
                 'preview_jpeg': None, 'preview_b64': None,
             }
@@ -50,9 +57,11 @@ class LiveHub:
             state = self.sessions[session_id]
             if state['source'] != 'simulation':
                 raise ValueError('Fault injection is only available in simulation')
+            if fault not in ('none', 'lean', 'occlusion', 'lost', 'imu_drop'):
+                raise ValueError('Unknown simulation fault')
             state['fault'] = fault
             if state['actor']:
-                state['actor'].set_fault(fault)
+                state['actor'].set_fault('none' if fault == 'imu_drop' else fault)
 
     def confirm(self, session_id):
         with self.lock:
@@ -124,6 +133,11 @@ class LiveHub:
                     state['capture'].close()
                 except Exception:
                     pass
+            if state.get('imu'):
+                try:
+                    state['imu'].close()
+                except Exception:
+                    pass
             summary = {
                 'reps': pipeline.machine.reps,
                 'invalid_reps': pipeline.machine.invalid_reps,
@@ -153,6 +167,16 @@ class LiveHub:
                 else:
                     snapshot = state['capture'].snapshot()
                     snapshot['timestamp'] = elapsed
+                snapshot['imu_required'] = IMU_REQUIRED
+                try:
+                    snapshot['imu'] = read_imu(
+                        state.get('imu'), elapsed, state['source'],
+                        angle=None if state['actor'] is None else state['actor'].angle,
+                        side=state['side'], drop=state['fault'] == 'imu_drop',
+                    )
+                except Exception:
+                    from edge.imu.packets import lost_packet
+                    snapshot['imu'] = lost_packet(state['source']) if state.get('imu') else None
             except Exception as exc:
                 snapshot = {'people': 0, 'points': {}, 'landmarks2d': {}, 'confidence': 0, 'source': state['source'],
                             'model_version': 'unavailable', 'timestamp': elapsed, 'simulation': state['source'] == 'simulation',

@@ -25,5 +25,9 @@ class OverlayTests(unittest.TestCase):
         self.assertTrue(row['calibration']['simulation'])
         self.assertTrue(row.get('frame_jpeg'))
 
+    def test_dual_sensor_banner(self):
+        from edge.overlay import overlay_banner
+        self.assertIn('ARM IMU', overlay_banner('simulation', 'simulation'))
+
     def test_opencv_flag_is_boolean(self):
         self.assertIsInstance(opencv_available(), bool)

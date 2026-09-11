@@ -55,9 +55,9 @@ http://127.0.0.1:8765 — schematic simulation only.
 
 ## Edge measurement (Jetson)
 
-Hardware is **not** assumed present. Simulation never reports itself as a live camera.
+Hardware is **not** assumed present. Simulation never reports itself as a live camera. A live RealSense session never receives a simulated IMU.
 
-Standalone prototype (synthetic skeleton + real angle math):
+Standalone prototype (synthetic skeleton + synthetic arm IMU + real angle math):
 
 ```sh
 python -m edge.prototype --source simulation --seconds 12
@@ -69,10 +69,12 @@ Live RealSense + pose (fails closed if the camera or model is missing):
 set REHABAI_SOURCE=live
 set REHABAI_POSE_MODEL=C:\path\to\pose.task
 set REHABAI_POSE_KIND=mediapipe
+set REHABAI_IMU_TRANSPORT=udp
+set REHABAI_IMU_REQUIRED=1
 python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 ```
 
-or `python -m edge.prototype --source live --model C:\path\to\pose.task`.
+Arm IMU JSON at 100 Hz to UDP `127.0.0.1:8766` (or `REHABAI_IMU_TRANSPORT=serial` with `REHABAI_IMU_SERIAL`). Accel m/s², gyro deg/s. Default simulation mode already runs **both** a synthetic RGB-D skeleton and a synthetic upper-arm IMU; they are labelled simulation.
 
 Optional edge packages: `pip install -r requirements-edge.txt` after matching JetPack / RealSense / CUDA. Do not auto-download weights.
 
@@ -98,13 +100,13 @@ These tests do **not** validate camera accuracy, Jetson latency, or clinical per
 
 ## Architecture
 
-RealSense → Jetson edge pipeline → FastAPI → SQLite (default) or PostgreSQL → clinician/patient studio + supervisor agent.
+RealSense → arm IMU → Jetson edge pipeline → FastAPI → SQLite (default) or PostgreSQL → clinician/patient studio + supervisor agent.
 
 See `docs/ARCHITECTURE.md` and `AGENT_HANDOFF.md`.
 
 ## Safety and clinical limits
 
-- Joint angles are deterministic vector geometry, not LLM output.
+- Joint angles are deterministic vector geometry, not LLM output. Repetition counting uses camera ROM; the IMU contributes rate and quality, not a disease label.
 - Safety ALLOW / WARN / PAUSE / BLOCK / CLINICIAN_REVIEW is deterministic. The agent cannot override BLOCK.
 - Invalid or low-confidence ROM is not used in progress analysis.
 - No automatic diagnosis of adhesive capsulitis.

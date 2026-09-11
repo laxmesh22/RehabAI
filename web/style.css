@@ -102,6 +102,20 @@ td { padding: 12px 8px; border-bottom: 1px solid #eee6d8; }
 .chart { width: 100%; height: 180px; }
 .start-giant { width: 100%; padding: 28px; font-size: 28px; font-family: Fraunces, serif; }
 .patient-home h1 { font-size: 46px; margin: 0 0 8px; }
+.intake-panel { background: var(--paper-2); border: 1px solid var(--line); border-radius: 20px; padding: 20px; }
+.intake-panel h2 { margin: 8px 0 6px; font-size: 28px; }
+.scale-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+.scale-chips button {
+  min-width: 48px; border-radius: 12px; border: 1px solid var(--line); background: #fff; padding: 10px 12px;
+}
+.scale-chips button.active { background: var(--pine); color: var(--lime); border-color: var(--pine); }
+.mic-btn { min-width: 120px; }
+.mic-btn.hot { background: var(--clay); color: #fff; border-color: var(--clay); }
+.intake-status { min-height: 24px; color: var(--ink-soft); margin: 0 0 8px; }
+.intake-progress { display: flex; gap: 6px; margin: 8px 0 16px; }
+.intake-progress span { width: 12px; height: 12px; border-radius: 99px; background: var(--mist); display: inline-block; }
+.intake-progress span.on { background: var(--pine); }
+.intake-progress span.now { background: var(--lime); outline: 2px solid var(--pine); }
 @media (max-width: 980px) {
   .login-shell, .app-shell, .cards, .grid-2, .grid-live, .checks, .metrics { grid-template-columns: 1fr; }
   .rail { display: none; }

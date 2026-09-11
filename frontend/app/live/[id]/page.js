@@ -38,7 +38,7 @@ export default function LivePage() {
   return (
     <main className="p-6 grid md:grid-cols-2 gap-6">
       <div className="bg-pine rounded-2xl overflow-hidden">
-        <p className="text-lime p-3 text-xs tracking-[.2em]">{session.source === 'live' ? 'LIVE CAMERA' : 'SYNTHETIC SKELETON · NOT A CAMERA FEED'}</p>
+        <p className="text-lime p-3 text-xs tracking-[.2em]">{session.source === 'live' ? 'LIVE RGB-D + ARM IMU' : 'SYNTHETIC RGB-D + ARM IMU · NOT LIVE SENSORS'}</p>
         <canvas ref={canvasRef} width="640" height="480" className="w-full" />
       </div>
       <div>
@@ -50,7 +50,7 @@ export default function LivePage() {
         <button className="bg-pine text-lime px-3 py-2 rounded-xl mr-2" onClick={() => api('sessions/' + id + '/confirm', {})}>Confirm tracking</button>
         <button className="border px-3 py-2 rounded-xl mr-2" onClick={() => api('sessions/' + id + '/fault', { fault: 'lean' })}>Simulate lean</button>
         <button className="border px-3 py-2 rounded-xl" onClick={async () => {
-          await api('sessions/' + id + '/finish', { pain_after: 4, create_assessment: true });
+          await api('sessions/' + id + '/finish', { pain_after: 4, create_assessment: false });
           router.push('/patients/' + session.patient_id);
         }}>Stop & save</button>
       </div>

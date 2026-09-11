@@ -5,9 +5,13 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 from backend.access import can_treat, can_view_patient, load_patient
 from backend.auth import create_token, current_user, hash_password, new_id, require_roles, verify_password, decode_token
-from backend.config import DATABASE_URL, DEMO_PASSWORD, LLM_BASE_URL, MEASUREMENT_SOURCE
+from backend.config import (
+    DATABASE_URL, DEMO_PASSWORD, IMU_PLACEMENTS, IMU_REQUIRED, IMU_SERIAL, IMU_TRANSPORT,
+    LLM_BASE_URL, MEASUREMENT_SOURCE,
+)
 from backend.database.models import (
     AIReport, Alert, Appointment, Assessment, AuditLog, ClinicalNote, CompensationEvent,
     Consent, ExerciseResult, PainScore, Patient, ROMMeasurement, Recording, RehabPlan,
@@ -16,6 +20,7 @@ from backend.database.models import (
 from backend.database.session import get_db
 from backend.services.live_hub import HUB
 from backend.services.persist import persist_finished_session
+from edge.imu.device import describe_imu
 from edge.overlay import opencv_available
 from agent.orchestrator import run_supervisor
 from agent.tools.clinical import (
@@ -23,6 +28,10 @@ from agent.tools.clinical import (
     get_compensation_events, get_session_history,
 )
 from edge.exercises.library import get_exercise
+from backend.intake import (
+    INTAKE_FIELDS, apply_confirmed_value, empty_intake, merge_finish_intake,
+    missing_intake_fields, parse_utterance, script_payload,
+)
 
 router = APIRouter()
 
@@ -66,19 +75,41 @@ class SessionStartBody(BaseModel):
     side: str = 'right'
     target: float = Field(default=80, ge=40, le=150)
     goal: int = Field(default=5, ge=1, le=20)
-    pain_before: int = Field(default=0, ge=0, le=10)
+    pain_before: int | None = Field(default=None, ge=0, le=10)
     consent_recording: bool = False
     kind: str = 'rehab'
 
 
+class IntakeParseBody(BaseModel):
+    field: str
+    text: str
+    awaiting_confirm: bool = False
+
+
+class SessionIntakeBody(BaseModel):
+    field: str | None = None
+    value: int | None = None
+    source: str = 'tap'
+    transcript: str | None = None
+    language: str | None = None
+    confirmed: bool | None = None
+    pain_rest: int | None = Field(default=None, ge=0, le=10)
+    pain_movement: int | None = Field(default=None, ge=0, le=10)
+    difficulty_dressing: int | None = Field(default=None, ge=0, le=4)
+    difficulty_grooming: int | None = Field(default=None, ge=0, le=4)
+    difficulty_overhead: int | None = Field(default=None, ge=0, le=4)
+    difficulty_behind_back: int | None = Field(default=None, ge=0, le=4)
+
+
 class SessionFinishBody(BaseModel):
-    pain_after: int = Field(default=0, ge=0, le=10)
+    pain_after: int = Field(ge=0, le=10)
     create_assessment: bool = False
     pain_rest: int | None = Field(default=None, ge=0, le=10)
-    difficulty_dressing: int = 0
-    difficulty_grooming: int = 0
-    difficulty_overhead: int = 0
-    difficulty_behind_back: int = 0
+    pain_movement: int | None = Field(default=None, ge=0, le=10)
+    difficulty_dressing: int | None = Field(default=None, ge=0, le=4)
+    difficulty_grooming: int | None = Field(default=None, ge=0, le=4)
+    difficulty_overhead: int | None = Field(default=None, ge=0, le=4)
+    difficulty_behind_back: int | None = Field(default=None, ge=0, le=4)
     notes: str | None = None
 
 
@@ -128,6 +159,8 @@ def health():
         'opencv': opencv_available(),
         'frame_encoder': 'opencv' if opencv_available() else 'pillow',
         'pipeline': 'edge.pipeline.VisionPipeline',
+        'imu': describe_imu(MEASUREMENT_SOURCE, IMU_TRANSPORT, IMU_SERIAL, IMU_REQUIRED, IMU_PLACEMENTS),
+        'sensors': ['realsense', 'arm_imu'],
     }
 
 
@@ -325,6 +358,8 @@ def start_session(body: SessionStartBody, user: User = Depends(current_user), db
     patient = load_patient(db, user, body.patient_id)
     if user.role == 'ADMIN':
         raise HTTPException(403, 'Administrators do not start treatment sessions')
+    if body.kind not in ('assessment', 'rehab'):
+        raise HTTPException(400, 'kind must be assessment or rehab')
     spec = get_exercise(body.exercise_id)
     if not spec['tracking_supported']:
         raise HTTPException(400, spec['name']+' is in the library but camera tracking is not enabled')
@@ -338,6 +373,7 @@ def start_session(body: SessionStartBody, user: User = Depends(current_user), db
         exercise_id=body.exercise_id, side=body.side, source=MEASUREMENT_SOURCE, model_version='pending',
         consent_recording=body.consent_recording, target=body.target, goal=body.goal,
         pain_before=body.pain_before, status='calibrating', is_demo=patient.is_demo or MEASUREMENT_SOURCE == 'simulation',
+        kind='assessment' if body.kind == 'assessment' else 'rehab', intake=None,
     )
     db.add(row)
     if body.consent_recording:
@@ -350,8 +386,8 @@ def start_session(body: SessionStartBody, user: User = Depends(current_user), db
         raise HTTPException(400, str(exc)) from exc
     audit(db, user, 'start_session', 'session', sid, {'exercise': body.exercise_id, 'source': MEASUREMENT_SOURCE})
     db.flush()
-    return {'id': sid, 'source': MEASUREMENT_SOURCE, 'status': 'calibrating', 'plan_id': None if plan is None else plan.id,
-            'exercise': spec}
+    return {'id': sid, 'source': MEASUREMENT_SOURCE, 'status': 'calibrating', 'kind': row.kind,
+            'plan_id': None if plan is None else plan.id, 'exercise': spec, 'intake': None}
 
 
 @router.get('/sessions/{session_id}')
@@ -362,6 +398,54 @@ def get_session(session_id: str, user: User = Depends(current_user), db: Session
     load_patient(db, user, row.patient_id)
     live = HUB.latest(session_id)
     return {**_session(row), 'live': live}
+
+
+@router.get('/intake/script')
+def intake_script(_user: User = Depends(current_user)):
+    return script_payload()
+
+
+@router.post('/intake/parse')
+def intake_parse(body: IntakeParseBody, _user: User = Depends(current_user)):
+    try:
+        return parse_utterance(body.text, body.field, body.awaiting_confirm)
+    except KeyError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post('/sessions/{session_id}/intake')
+def save_session_intake(session_id: str, body: SessionIntakeBody, user: User = Depends(current_user),
+                        db: Session = Depends(get_db)):
+    row = db.get(RehabSession, session_id)
+    if row is None:
+        raise HTTPException(404, 'Session not found')
+    load_patient(db, user, row.patient_id)
+    if row.status in ('complete', 'blocked'):
+        raise HTTPException(400, 'Intake cannot be changed after the session is saved')
+    intake = row.intake or empty_intake()
+    if body.language:
+        intake['language'] = body.language
+    try:
+        if body.field is not None:
+            if body.value is None:
+                raise HTTPException(400, 'value is required when field is set')
+            intake = apply_confirmed_value(intake, body.field, body.value, body.source, body.transcript)
+        for fid in INTAKE_FIELDS:
+            value = getattr(body, fid)
+            if value is None:
+                continue
+            intake = apply_confirmed_value(intake, fid, value, body.source)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if body.language:
+        intake['language'] = body.language
+    row.intake = intake
+    flag_modified(row, 'intake')
+    if isinstance(intake.get('pain_rest'), int):
+        row.pain_before = intake['pain_rest']
+    audit(db, user, 'save_intake', 'session', row.id, {'confirmed': intake.get('confirmed'), 'source': intake.get('source')})
+    db.flush()
+    return {'id': row.id, 'intake': row.intake, 'pain_before': row.pain_before, 'kind': row.kind}
 
 
 @router.get('/sessions/{session_id}/metrics')
@@ -392,6 +476,10 @@ def confirm_session(session_id: str, user: User = Depends(current_user), db: Ses
     if row is None:
         raise HTTPException(404, 'Session not found')
     load_patient(db, user, row.patient_id)
+    if row.kind == 'assessment':
+        intake = row.intake or {}
+        if not intake.get('confirmed'):
+            raise HTTPException(400, 'Complete pain and function intake before starting the movement trial')
     try:
         HUB.confirm(session_id)
     except (KeyError, ValueError) as exc:
@@ -419,7 +507,20 @@ def finish_session(session_id: str, body: SessionFinishBody, user: User = Depend
     row = db.get(RehabSession, session_id)
     if row is None:
         raise HTTPException(404, 'Session not found')
+    if row.status in ('complete', 'blocked'):
+        raise HTTPException(400, 'Session is already saved')
     patient = load_patient(db, user, row.patient_id)
+    scores = merge_finish_intake(row.intake, body)
+    if body.create_assessment:
+        missing = missing_intake_fields(scores)
+        if missing:
+            raise HTTPException(
+                400,
+                'Complete pain and function intake before saving an assessment. Missing: ' + ', '.join(missing),
+            )
+        body = body.model_copy(update=scores)
+    else:
+        body = body.model_copy(update={key: scores.get(key) for key in INTAKE_FIELDS if scores.get(key) is not None})
     try:
         summary, history = HUB.finish(session_id)
     except KeyError as exc:
@@ -632,7 +733,8 @@ def _session(row):
             'source': row.source, 'model_version': row.model_version, 'reps': row.reps, 'invalid_reps': row.invalid_reps,
             'peak_angle': row.peak_angle, 'coverage': row.coverage, 'target': row.target, 'goal': row.goal,
             'pain_before': row.pain_before, 'pain_after': row.pain_after, 'status': row.status,
-            'safety_outcome': row.safety_outcome, 'is_demo': row.is_demo, 'consent_recording': row.consent_recording}
+            'safety_outcome': row.safety_outcome, 'is_demo': row.is_demo, 'consent_recording': row.consent_recording,
+            'kind': row.kind or 'rehab', 'intake': row.intake}
 
 
 def _alert(row):

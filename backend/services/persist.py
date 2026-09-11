@@ -19,6 +19,9 @@ def compact_sample(row):
         'feedback': row.get('feedback'),
         'source': row.get('source'),
         'safety': (row.get('safety') or {}).get('level'),
+        'imu_ok': (row.get('imu') or {}).get('ok'),
+        'imu_source': (row.get('imu') or {}).get('source'),
+        'fused_angle': (row.get('imu') or {}).get('fused_angle'),
     }
 
 
@@ -42,6 +45,7 @@ def persist_finished_session(db, session_row, patient, summary, history, finish_
             'reps': session_row.reps, 'peak': session_row.peak_angle, 'coverage': session_row.coverage,
             'safety': session_row.safety_outcome, 'source': session_row.source,
             'smoothness': smoothness(angles),
+            'imu': _imu_summary(history),
         },
         'sample_count': len(history),
         'samples': sampled,
@@ -51,7 +55,7 @@ def persist_finished_session(db, session_row, patient, summary, history, finish_
                           reps_invalid=session_row.invalid_reps, peak=session_row.peak_angle,
                           compensation_count=len(summary['events'])))
     db.add(PainScore(id=new_id('PAIN-'), patient_id=patient.id, session_id=session_row.id,
-                     rest=finish_body.pain_rest, movement=finish_body.pain_after, context='session'))
+                     rest=finish_body.pain_rest, movement=finish_body.pain_movement, context='session'))
     movement = _movement(session_row.exercise_id)
     valid_rom = session_row.coverage is not None and session_row.coverage >= 50 and (session_row.peak_angle or 0) > 0
     if valid_rom:
@@ -81,7 +85,7 @@ def persist_finished_session(db, session_row, patient, summary, history, finish_
             avg_confidence=min(1.0, (session_row.coverage or 0) / 100),
             smoothness=smoothness(angles),
             torso_compensation=max((e['value'] for e in summary['events']), default=None),
-            pain_rest=finish_body.pain_rest, pain_movement=finish_body.pain_after,
+            pain_rest=finish_body.pain_rest, pain_movement=finish_body.pain_movement,
             difficulty_dressing=finish_body.difficulty_dressing, difficulty_grooming=finish_body.difficulty_grooming,
             difficulty_overhead=finish_body.difficulty_overhead, difficulty_behind_back=finish_body.difficulty_behind_back,
             notes=finish_body.notes, is_demo=session_row.is_demo, tracking_quality=session_row.coverage,
@@ -101,3 +105,23 @@ def _movement(exercise_id):
     if 'flexion' in exercise_id or exercise_id == 'wall_climb':
         return 'flexion'
     return 'elevation'
+
+
+def _imu_summary(history):
+    packets = [row.get('imu') for row in history if row.get('imu')]
+    if not packets:
+        return {'enabled': False, 'source': 'off'}
+    ok = [p for p in packets if p.get('ok')]
+    quality = None
+    for packet in reversed(packets):
+        if packet.get('quality'):
+            quality = packet['quality']
+            break
+    return {
+        'enabled': True,
+        'source': packets[-1].get('source'),
+        'placement': packets[-1].get('placement', 'arm'),
+        'ok_fraction': round(len(ok) / max(1, len(packets)), 3),
+        'quality': quality,
+        'role': 'kinematics_and_quality_not_diagnosis',
+    }

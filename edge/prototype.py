@@ -25,16 +25,20 @@ def main():
     args = parser.parse_args()
     pipeline = VisionPipeline('PROTO', args.exercise, args.side, args.target, args.goal, args.source)
     if args.source == 'simulation':
+        from edge.imu.simulation import SimulatedArmImu
         movement = 'abduction' if 'abduction' in args.exercise else 'flexion' if 'flexion' in args.exercise or args.exercise == 'wall_climb' else 'elevation'
         patient = SimulatedPatient(args.side, movement)
+        imu = SimulatedArmImu()
         started = time.monotonic()
         while time.monotonic() - started < args.seconds:
             elapsed = time.monotonic() - started
             patient.set_angle(wave(elapsed, args.target))
             snapshot = patient.skeleton(elapsed)
+            snapshot['imu'] = imu.read_from_angle(elapsed, patient.angle, args.side)
             row = pipeline.process_snapshot(snapshot)
             print(json.dumps({k: row[k] for k in ('timestamp', 'exercise', 'shoulder_angle', 'torso_lean',
-                                                   'pose_confidence', 'rep', 'exercise_phase', 'feedback', 'source')}),
+                                                   'pose_confidence', 'rep', 'exercise_phase', 'feedback', 'source')
+                              } | {'imu': row.get('imu')}),
                   flush=True)
             time.sleep(0.1)
         return

@@ -17,35 +17,53 @@ def evaluate_calibration(snapshot, min_confidence=.65, min_distance=.8, max_dist
     else:
         camera_ok = bool(snapshot.get('camera_ok', True)) and people >= 0
         depth_ok = bool(snapshot.get('depth_ok', True)) and pose_ok
+    imu = snapshot.get('imu')
+    imu_enabled = imu is not None
+    imu_ok = bool(imu and imu.get('ok'))
+    imu_simulation = bool(imu and imu.get('simulation'))
+    imu_required = bool(snapshot.get('imu_required'))
     ready = pose_ok and distance_ok and (simulation or (camera_ok and depth_ok))
+    if imu_required and not simulation:
+        ready = ready and imu_ok
     return {
         'camera_ok': camera_ok,
         'depth_ok': depth_ok,
         'pose_ok': pose_ok,
         'distance_ok': bool(distance_ok),
+        'imu_ok': imu_ok,
+        'imu_enabled': imu_enabled,
+        'imu_simulation': imu_simulation,
         'distance_m': None if distance is None else round(float(distance), 2),
         'people': people,
         'simulation': simulation,
         'ready': ready,
-        'message': _message(simulation, camera_ok, depth_ok, pose_ok, distance_ok, people),
+        'message': _message(simulation, camera_ok, depth_ok, pose_ok, distance_ok, people,
+                            imu_ok, imu_enabled, imu_required, imu_simulation),
     }
 
 
-def _message(simulation, camera_ok, depth_ok, pose_ok, distance_ok, people):
+def _message(simulation, camera_ok, depth_ok, pose_ok, distance_ok, people,
+             imu_ok=False, imu_enabled=False, imu_required=False, imu_simulation=False):
     if simulation:
         if pose_ok and distance_ok:
+            if imu_enabled and imu_ok:
+                return 'Simulation ready. Synthetic RGB-D and arm IMU. These are not live sensors.'
             return 'Simulation ready. Synthetic skeleton is visible. This is not a live camera.'
         return 'Simulation is not yet showing a full upper body.'
     if not camera_ok:
         return 'Camera not ready.'
     if not depth_ok:
         return 'Depth is unavailable. Assessment cannot start.'
+    if imu_required and not imu_ok:
+        return 'Arm IMU is not streaming. Dual-sensor live mode cannot start.'
     if people != 1:
         return 'Exactly one person must be fully visible.'
     if not pose_ok:
         return 'Upper-body landmarks are incomplete or low-confidence.'
     if not distance_ok:
         return 'Stand on the marked distance marker and face the camera.'
+    if imu_enabled and imu_ok and not imu_simulation:
+        return 'Tracking quality is acceptable. RealSense and arm IMU are live and unvalidated.'
     return 'Tracking quality is acceptable. You may start the assessment.'
 
 

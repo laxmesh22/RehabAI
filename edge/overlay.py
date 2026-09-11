@@ -34,22 +34,37 @@ def overlay_spec(landmarks2d, highlight_side='right'):
     return {'points': points, 'bones': bones, 'highlight_side': highlight_side}
 
 
-def render_rgb(landmarks2d, highlight_side='right', source='simulation', angle=None, feedback='', width=640, height=480):
+def render_rgb(landmarks2d, highlight_side='right', source='simulation', angle=None, feedback='',
+               width=640, height=480, imu_source=None):
     """BGR uint8 frame. Simulation is labelled on the pixels themselves."""
     spec = overlay_spec(landmarks2d, highlight_side)
+    banner = overlay_banner(source, imu_source)
     if opencv_available():
-        return _render_cv2(spec, source, angle, feedback, width, height)
-    return _render_pillow(spec, source, angle, feedback, width, height)
+        return _render_cv2(spec, banner, angle, feedback, width, height)
+    return _render_pillow(spec, banner, angle, feedback, width, height)
 
 
-def _render_cv2(spec, source, angle, feedback, width, height):
+def overlay_banner(source, imu_source=None):
+    cam = 'SYNTHETIC RGB-D' if source == 'simulation' else 'LIVE RGB-D'
+    if imu_source == 'simulation':
+        imu = ' + ARM IMU'
+        note = ' · NOT LIVE SENSORS'
+    elif imu_source == 'live':
+        imu = ' + ARM IMU'
+        note = ' · UNVALIDATED'
+    else:
+        imu = ''
+        note = ' · NOT A CAMERA' if source == 'simulation' else ' · POSE OVERLAY'
+    return cam + imu + note
+
+
+def _render_cv2(spec, banner, angle, feedback, width, height):
     import numpy as np
     import cv2
     frame = np.zeros((height, width, 3), np.uint8)
     frame[:] = PINE_BGR
     cv2.rectangle(frame, (0, height - 70), (width, height), (28, 42, 18), -1)
     cv2.line(frame, (40, height - 80), (width - 40, height - 80), (80, 110, 90), 2)
-    banner = 'SYNTHETIC RGB · NOT A CAMERA' if source == 'simulation' else 'LIVE RGB · POSE OVERLAY'
     cv2.putText(frame, banner, (16, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, LIME_BGR, 1, cv2.LINE_AA)
     _draw_skeleton_cv2(cv2, frame, spec, width, height)
     if angle is not None:
@@ -71,14 +86,13 @@ def _draw_skeleton_cv2(cv2, frame, spec, width, height):
         cv2.circle(frame, (int(pt[0] * width), int(pt[1] * height)), 8, color, -1, cv2.LINE_AA)
 
 
-def _render_pillow(spec, source, angle, feedback, width, height):
+def _render_pillow(spec, banner, angle, feedback, width, height):
     import numpy as np
     from PIL import Image, ImageDraw
     img = Image.new('RGB', (width, height), (22, 54, 36))
     draw = ImageDraw.Draw(img)
     draw.rectangle([0, height - 70, width, height], fill=(18, 42, 28))
     draw.line([(40, height - 80), (width - 40, height - 80)], fill=(90, 110, 80), width=2)
-    banner = 'SYNTHETIC RGB · NOT A CAMERA' if source == 'simulation' else 'LIVE RGB · POSE OVERLAY'
     draw.text((16, 14), banner, fill=(215, 245, 106))
     for bone in spec['bones']:
         a, b = spec['points'][bone['a']], spec['points'][bone['b']]
