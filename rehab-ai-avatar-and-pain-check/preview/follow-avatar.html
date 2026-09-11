@@ -1,0 +1,862 @@
+<title>rehab.ai Follow-Along Model</title>
+<meta name="color-scheme" content="light">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500&family=Inter:wght@400;500;600;700&display=swap">
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #EEF2EF; --ink: #1F2B29; --ink-2: #4B5955; --teal: #2C6E62; --teal-tint: #DCE8E3;
+    --gold: #D9A441; --coral: #C1524C; --card: #FBFAF7; --rule: #CDD8D3;
+    --display: "Fraunces", "Iowan Old Style", Georgia, serif;
+    --body: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { background: var(--bg); }
+  body { margin: 0; color: var(--ink); font: 400 16px/1.55 var(--body); padding-inline: 20px; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding-block: 32px 64px; display: flex; flex-direction: column; gap: 24px; }
+  header { display: flex; flex-direction: column; gap: 8px; }
+  h1 { font-family: var(--display); font-weight: 500; font-size: clamp(1.9rem, 1.4rem + 1.8vw, 2.6rem); line-height: 1.08; margin: 0; letter-spacing: -0.01em; text-wrap: balance; }
+  .lede { margin: 0; color: var(--ink-2); max-width: 64ch; }
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; align-items: start; }
+  @media (min-width: 960px) { .layout { grid-template-columns: minmax(0, 1.6fr) minmax(300px, 1fr); } }
+
+  .stage { position: relative; background: var(--card); border-radius: 16px; overflow: hidden; aspect-ratio: 4 / 3; max-width: 100%; border: 1px solid #E1E7E3; }
+  @media (max-width: 600px) { .stage { aspect-ratio: 4 / 5; } }
+  #stage-canvas { position: absolute; inset: 0; }
+  .overlay { position: absolute; left: 18px; top: 16px; display: flex; flex-direction: column; gap: 2px; pointer-events: none;
+             background: rgba(251, 250, 247, 0.86); border-radius: 12px; padding: 12px 16px; min-width: 150px; }
+  .ov-phase { font-weight: 600; font-size: 0.95rem; color: var(--teal); }
+  .ov-deg { font-family: var(--display); font-weight: 500; font-size: clamp(2.6rem, 2rem + 2.5vw, 3.8rem); line-height: 1; }
+  .ov-of, .ov-reps { font-size: 0.9rem; color: var(--ink-2); }
+  .ov-live { font-size: 0.9rem; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
+  .ov-live::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--ink); }
+
+  .panel { display: flex; flex-direction: column; gap: 22px; }
+  fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  legend { font-weight: 600; font-size: 0.95rem; padding: 0; margin-bottom: 10px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip, .seg label { position: relative; }
+  .chip input, .seg input { position: absolute; opacity: 0; pointer-events: none; }
+  .chip span, .seg span { display: inline-block; padding: 9px 13px; border-radius: 10px; border: 1.5px solid var(--teal); color: var(--teal);
+                          font-weight: 600; font-size: 0.9rem; cursor: pointer; background: var(--bg); user-select: none; }
+  .chip input:checked + span, .seg input:checked + span { background: var(--teal); color: #fff; }
+  .chip input:focus-visible + span, .seg input:focus-visible + span { outline: 2px solid var(--ink); outline-offset: 2px; }
+  .seg { display: flex; flex-wrap: wrap; gap: 8px; }
+  .ex-card { background: var(--card); border-radius: 16px; padding: 16px 18px; border: 1px solid #E1E7E3; margin: 0; }
+  .row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  .row output { font-family: var(--display); font-weight: 500; font-size: 1.25rem; }
+  input[type="range"] { width: 100%; accent-color: var(--teal); }
+  .note { font-size: 0.86rem; color: var(--ink-2); margin: 0; }
+  .check { display: flex; gap: 10px; align-items: flex-start; font-weight: 500; }
+  .check input { accent-color: var(--teal); width: 18px; height: 18px; margin-top: 3px; }
+  .buttons { display: flex; gap: 10px; flex-wrap: wrap; }
+  button { font: 600 0.95rem/1 var(--body); border-radius: 10px; padding: 13px 20px; min-height: 48px; cursor: pointer; }
+  .btn-primary { background: var(--teal); color: #fff; border: 0; }
+  .btn-secondary { background: var(--bg); color: var(--teal); border: 1.5px solid var(--teal); }
+  button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  .fallback { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; text-align: center; color: var(--ink-2); }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Follow-along model</h1>
+    <p class="lede">The model moves only as far as the patient's approved target, on the same side of the screen as their affected shoulder. The arc at the joint is the same goniometer arc the app uses everywhere.</p>
+  </header>
+
+  <div class="layout">
+    <div class="stage">
+      <div id="stage-canvas" role="img" aria-label="Exercise demonstration"></div>
+      <div class="fallback" id="fallback" hidden>The 3D view needs WebGL. Try another browser or device.</div>
+      <div class="overlay" aria-live="polite">
+        <span class="ov-phase" id="ov-phase">Move slowly</span>
+        <span class="ov-deg" id="ov-deg">0°</span>
+        <span class="ov-of" id="ov-of">of 45° target</span>
+        <span class="ov-reps" id="ov-reps">Reps done: 0</span>
+        <span class="ov-live" id="ov-live" hidden>Patient 30°</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <fieldset>
+        <legend>Exercise</legend>
+        <div class="chips" id="exercise-list"></div>
+        <p class="ex-card" id="ex-text"></p>
+      </fieldset>
+
+      <fieldset>
+        <legend>Affected shoulder</legend>
+        <div class="seg">
+          <label><input type="radio" name="side" id="side-left" value="left" checked><span>Left</span></label>
+          <label><input type="radio" name="side" id="side-right" value="right"><span>Right</span></label>
+        </div>
+        <label class="check"><input type="checkbox" id="mirror" checked><span>Mirror view</span></label>
+        <p class="note" id="mirror-note"></p>
+      </fieldset>
+
+      <fieldset>
+        <div class="row"><label for="target">Approved target</label><output id="target-out">45°</output></div>
+        <input type="range" id="target" min="10" max="90" step="1" value="45">
+        <p class="note" id="target-note" hidden></p>
+        <div class="row"><label for="hold">Hold at target</label><output id="hold-out">5 s</output></div>
+        <input type="range" id="hold" min="0" max="10" step="1" value="5">
+      </fieldset>
+
+      <fieldset>
+        <legend>Camera</legend>
+        <div class="seg">
+          <label><input type="radio" name="view" id="view-auto" value="auto" checked><span>Auto</span></label>
+          <label><input type="radio" name="view" id="view-front" value="front"><span>Front</span></label>
+          <label><input type="radio" name="view" id="view-side" value="side"><span>Side</span></label>
+          <label><input type="radio" name="view" id="view-tq" value="three-quarter"><span>Three-quarter</span></label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <label class="check"><input type="checkbox" id="live-on"><span>Show the patient's live angle on the arc</span></label>
+        <div class="row"><label for="live">Simulated band reading</label><output id="live-out">Off</output></div>
+        <input type="range" id="live" min="0" max="170" step="1" value="30" disabled>
+        <p class="note">In the app this comes from the band or camera, through setLiveAngle.</p>
+      </fieldset>
+
+      <div class="buttons">
+        <button class="btn-primary" id="play" type="button">Pause</button>
+        <button class="btn-secondary" id="restart" type="button">Restart</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+var __defProp = Object.defineProperty;
+var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
+
+// src/avatar/FollowAvatar.ts
+import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
+
+// src/avatar/motion.ts
+var EXERCISES = {
+  wand_er: { id: "wand_er", plane: "horizontal", minTarget: 10, maxTarget: 90, defaultTarget: 45, prop: "wand", continuous: false },
+  er: { id: "er", plane: "horizontal", minTarget: 10, maxTarget: 90, defaultTarget: 40, prop: null, continuous: false },
+  flexion: { id: "flexion", plane: "sagittal", minTarget: 20, maxTarget: 170, defaultTarget: 120, prop: null, continuous: false },
+  abduction: { id: "abduction", plane: "frontal", minTarget: 20, maxTarget: 170, defaultTarget: 90, prop: null, continuous: false },
+  wand_flexion: { id: "wand_flexion", plane: "sagittal", minTarget: 20, maxTarget: 165, defaultTarget: 110, prop: "wand", continuous: false },
+  wall_walk: { id: "wall_walk", plane: "sagittal", minTarget: 30, maxTarget: 125, defaultTarget: 100, prop: "wall", continuous: false },
+  pendulum: { id: "pendulum", plane: "none", minTarget: 0, maxTarget: 0, defaultTarget: 0, prop: "table", continuous: true }
+};
+var clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
+var clamp01 = (x) => clamp(x, 0, 1);
+var deg2rad = (d) => d * Math.PI / 180;
+var rad2deg = (r) => r * 180 / Math.PI;
+var ease = (x) => 0.5 - 0.5 * Math.cos(Math.PI * clamp01(x));
+function clampTarget(id, target) {
+  const s = EXERCISES[id];
+  return s.continuous ? 0 : clamp(target, s.minTarget, s.maxTarget);
+}
+function timingFor(target, speedDegPerS = 18, holdS = 5, restS = 1.5) {
+  const moveS = Math.max(2.5, target / Math.max(1, speedDegPerS));
+  return { moveS, holdS: Math.max(0, holdS), returnS: moveS, restS: Math.max(0, restS) };
+}
+var cycleLength = (t) => t.moveS + t.holdS + t.returnS + t.restS;
+function cycleAt(elapsed, t) {
+  const total = cycleLength(t);
+  const rep = Math.floor(elapsed / total);
+  let x = elapsed - rep * total;
+  if (x < t.moveS) return { rep, phase: "move", progress: ease(x / t.moveS), remaining: t.moveS - x };
+  x -= t.moveS;
+  if (x < t.holdS) return { rep, phase: "hold", progress: 1, remaining: t.holdS - x };
+  x -= t.holdS;
+  if (x < t.returnS) return { rep, phase: "return", progress: 1 - ease(x / t.returnS), remaining: t.returnS - x };
+  x -= t.returnS;
+  return { rep, phase: "rest", progress: 0, remaining: t.restS - x };
+}
+function staircase(p, steps) {
+  const x = clamp01(p) * steps;
+  const i = Math.floor(x);
+  if (i >= steps) return 1;
+  return (i + ease(x - i)) / steps;
+}
+function elevationDir(elevationDeg, planeDeg, sideSign2) {
+  const e = deg2rad(clamp(elevationDeg, 0, 175));
+  const p = deg2rad(planeDeg);
+  return [sideSign2 * Math.sin(e) * Math.cos(p), -Math.cos(e), Math.sin(e) * Math.sin(p)];
+}
+function sagittalIK(z, y, upper, fore) {
+  const reach = upper + fore - 1e-4;
+  const d = clamp(Math.hypot(z, y), Math.abs(upper - fore) + 1e-4, reach);
+  const toTarget = Math.atan2(z, -y);
+  const a = Math.acos(clamp((upper * upper + d * d - fore * fore) / (2 * upper * d), -1, 1));
+  const g = Math.acos(clamp((upper * upper + fore * fore - d * d) / (2 * upper * fore), -1, 1));
+  return { elevation: rad2deg(toTarget - a), elbowFlex: rad2deg(Math.PI - g) };
+}
+function wallHeightFor(targetElevation, wallZ, upper, fore) {
+  const maxH = Math.sqrt(Math.max(0, (upper + fore - 1e-3) ** 2 - wallZ * wallZ));
+  let lo = -0.3, hi = maxH;
+  if (sagittalIK(wallZ, hi, upper, fore).elevation <= targetElevation) {
+    return { height: hi, elevation: sagittalIK(wallZ, hi, upper, fore).elevation };
+  }
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    if (sagittalIK(wallZ, mid, upper, fore).elevation < targetElevation) lo = mid;
+    else hi = mid;
+  }
+  return { height: (lo + hi) / 2, elevation: sagittalIK(wallZ, (lo + hi) / 2, upper, fore).elevation };
+}
+
+// src/avatar/FollowAvatar.ts
+var UPPER = 0.29;
+var FORE = 0.26;
+var HAND_R = 0.045;
+var HAND_OFFSET = FORE + 0.02;
+var SH_X = 0.19;
+var SH_Y = 0.5;
+var HIP_Y = 0.95;
+var WALL_HAND_Z = 0.4;
+var PENDULUM_LEAN = 55;
+var PENDULUM_PERIOD = 4;
+var PENDULUM_RADIUS = 0.2;
+var C = {
+  bg: 15659759,
+  body: 13883861,
+  arm: 7249555,
+  teal: 2911842,
+  ink: 2042665,
+  ground: 14805220,
+  prop: 16251124,
+  stick: 4082247
+};
+var DOWN = new THREE.Vector3(0, -1, 0);
+var UP = new THREE.Vector3(0, 1, 0);
+var FORWARD = new THREE.Vector3(0, 0, 1);
+var std = (color, roughness = 0.85) => new THREE.MeshStandardMaterial({ color, roughness, metalness: 0 });
+var overlay = (color, opacity) => new THREE.MeshBasicMaterial({ color, transparent: opacity < 1, opacity, depthTest: false, depthWrite: false, side: THREE.DoubleSide });
+var sideSign = (s) => s === "left" ? 1 : -1;
+var other = (s) => s === "left" ? "right" : "left";
+var Arm = class {
+  constructor(sign, material) {
+    __publicField(this, "sign", sign);
+    __publicField(this, "shoulder", new THREE.Group());
+    __publicField(this, "elbow", new THREE.Group());
+    __publicField(this, "hand");
+    __publicField(this, "meshes");
+    __publicField(this, "q1", new THREE.Quaternion());
+    __publicField(this, "qt", new THREE.Quaternion());
+    __publicField(this, "d", new THREE.Vector3());
+    this.shoulder.position.set(sign * SH_X, SH_Y, 0);
+    const ball = new THREE.Mesh(new THREE.SphereGeometry(0.058, 24, 16), material);
+    const upper = new THREE.Mesh(new THREE.CapsuleGeometry(0.045, UPPER - 0.09, 8, 16), material);
+    upper.position.y = -UPPER / 2;
+    this.elbow.position.y = -UPPER;
+    const fore = new THREE.Mesh(new THREE.CapsuleGeometry(0.04, FORE - 0.08, 8, 16), material);
+    fore.position.y = -FORE / 2;
+    this.hand = new THREE.Mesh(new THREE.SphereGeometry(HAND_R, 20, 14), material);
+    this.hand.position.y = -HAND_OFFSET;
+    this.shoulder.add(ball, upper, this.elbow);
+    this.elbow.add(fore, this.hand);
+    this.meshes = [ball, upper, fore, this.hand];
+    for (const m of this.meshes) m.castShadow = true;
+  }
+  /** dir: upper-arm direction in the trunk frame. twist: rotation about the upper arm (+ = toward +x). */
+  pose(dir, twistDeg, elbowFlexDeg) {
+    if (Array.isArray(dir)) this.d.set(dir[0], dir[1], dir[2]);
+    else this.d.copy(dir);
+    this.d.normalize();
+    this.q1.setFromUnitVectors(DOWN, this.d);
+    this.qt.setFromAxisAngle(UP, deg2rad(twistDeg));
+    this.shoulder.quaternion.copy(this.q1).multiply(this.qt);
+    this.elbow.rotation.set(-deg2rad(elbowFlexDeg), 0, 0);
+  }
+  relax() {
+    this.pose(elevationDir(6, 0, this.sign), 0, 8);
+  }
+  setMaterial(m) {
+    for (const mesh of this.meshes) mesh.material = m;
+  }
+};
+var Mannequin = class {
+  constructor(bodyMat) {
+    __publicField(this, "bodyMat", bodyMat);
+    __publicField(this, "root", new THREE.Group());
+    __publicField(this, "torso", new THREE.Group());
+    __publicField(this, "arms");
+    const add = (parent, geo, x, y, z, scale, rotZ = 0) => {
+      const m = new THREE.Mesh(geo, bodyMat);
+      m.position.set(x, y, z);
+      if (scale) m.scale.set(...scale);
+      m.rotation.z = rotZ;
+      m.castShadow = true;
+      parent.add(m);
+      return m;
+    };
+    for (const s of [1, -1]) {
+      add(this.root, new THREE.CapsuleGeometry(0.068, 0.724, 8, 16), s * 0.095, 0.49, 0);
+      add(this.root, new THREE.BoxGeometry(0.1, 0.06, 0.25), s * 0.1, 0.03, 0.06);
+    }
+    this.torso.position.y = HIP_Y;
+    this.root.add(this.torso);
+    add(this.torso, new THREE.CapsuleGeometry(0.115, 0.13, 8, 16), 0, 0.02, 0, [1, 1, 0.8], Math.PI / 2);
+    add(this.torso, new THREE.CapsuleGeometry(0.13, 0.16, 8, 16), 0, 0.17, 0, [1.05, 1, 0.78]);
+    add(this.torso, new THREE.CapsuleGeometry(0.15, 0.14, 8, 16), 0, 0.36, 0, [1.2, 1, 0.75]);
+    add(this.torso, new THREE.CylinderGeometry(0.045, 0.05, 0.1, 16), 0, 0.62, 0);
+    add(this.torso, new THREE.SphereGeometry(0.105, 32, 20), 0, 0.76, 0.01, [0.92, 1.05, 0.98]);
+    this.arms = { left: new Arm(1, bodyMat), right: new Arm(-1, bodyMat) };
+    this.torso.add(this.arms.left.shoulder, this.arms.right.shoulder);
+  }
+  highlight(side, armMat) {
+    this.arms[side].setMaterial(armMat);
+    this.arms[other(side)].setMaterial(this.bodyMat);
+  }
+};
+var GoniometerArc = class {
+  constructor(range, radius) {
+    __publicField(this, "range", range);
+    __publicField(this, "radius", radius);
+    __publicField(this, "group", new THREE.Group());
+    __publicField(this, "fill");
+    __publicField(this, "tick");
+    __publicField(this, "live");
+    __publicField(this, "mat", new THREE.Matrix4());
+    __publicField(this, "z", new THREE.Vector3());
+    const ri = radius - 0.018, ro = radius + 0.018;
+    const track = new THREE.Mesh(new THREE.RingGeometry(ri, ro, range, 1, 0, deg2rad(range)), overlay(C.teal, 0.16));
+    this.fill = new THREE.Mesh(new THREE.RingGeometry(ri, ro, range, 1, 0, deg2rad(range)), overlay(C.teal, 0.95));
+    this.tick = new THREE.Mesh(new THREE.BoxGeometry(0.085, 0.01, 0.01), overlay(C.ink, 0.99));
+    this.live = new THREE.Mesh(new THREE.SphereGeometry(0.017, 16, 12), overlay(C.ink, 0.99));
+    this.live.visible = false;
+    track.renderOrder = 10;
+    this.fill.renderOrder = 11;
+    this.tick.renderOrder = 12;
+    this.live.renderOrder = 12;
+    this.group.add(track, this.fill, this.tick, this.live);
+    this.setValue(0);
+  }
+  /** Arc angle 0 points along xAxis and grows toward yAxis. */
+  orient(origin, xAxis, yAxis) {
+    this.z.crossVectors(xAxis, yAxis);
+    this.mat.makeBasis(xAxis, yAxis, this.z);
+    this.group.quaternion.setFromRotationMatrix(this.mat);
+    this.group.position.copy(origin);
+  }
+  setValue(deg2) {
+    const n = Math.round(Math.min(this.range, Math.max(0, deg2)));
+    this.fill.geometry.setDrawRange(0, n * 6);
+  }
+  place(obj, deg2) {
+    const a = deg2rad(Math.min(this.range, Math.max(0, deg2)));
+    obj.position.set(Math.cos(a) * this.radius, Math.sin(a) * this.radius, 0);
+    obj.rotation.set(0, 0, a);
+  }
+  setTarget(deg2) {
+    this.place(this.tick, deg2);
+  }
+  setLive(deg2) {
+    this.live.visible = deg2 != null && Number.isFinite(deg2);
+    if (this.live.visible) this.place(this.live, deg2);
+  }
+};
+function createFollowAvatar(container, initial) {
+  const opts = {
+    holdS: 5,
+    restS: 1.5,
+    speedDegPerS: 18,
+    mirror: true,
+    view: "auto",
+    showArc: true,
+    playing: true,
+    ...initial
+  };
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.domElement.style.display = "block";
+  renderer.domElement.style.width = "100%";
+  renderer.domElement.style.height = "100%";
+  renderer.domElement.setAttribute("role", "img");
+  container.appendChild(renderer.domElement);
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(C.bg);
+  const camera = new THREE.PerspectiveCamera(32, 1, 0.1, 50);
+  scene.add(new THREE.HemisphereLight(16777215, 12963786, 1.9));
+  const sun = new THREE.DirectionalLight(16777215, 2.3);
+  sun.position.set(2.5, 4.5, 3.5);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(1024, 1024);
+  Object.assign(sun.shadow.camera, { left: -1.6, right: 1.6, top: 2.2, bottom: -0.6, near: 0.5, far: 12 });
+  sun.shadow.camera.updateProjectionMatrix();
+  sun.shadow.bias = -5e-4;
+  sun.shadow.normalBias = 0.02;
+  sun.target.position.set(0, 0.9, 0);
+  scene.add(sun, sun.target);
+  const ground = new THREE.Mesh(new THREE.CircleGeometry(1.7, 64), std(C.ground, 1));
+  ground.rotation.x = -Math.PI / 2;
+  ground.receiveShadow = true;
+  scene.add(ground);
+  const bodyMat = std(C.body);
+  const armMat = std(C.arm, 0.7);
+  const man = new Mannequin(bodyMat);
+  scene.add(man.root);
+  const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.013, 1, 12), std(C.stick, 0.6));
+  stick.castShadow = true;
+  scene.add(stick);
+  const wall = new THREE.Group();
+  const wallFace = WALL_HAND_Z + HAND_R;
+  const wallSlab = new THREE.Mesh(new THREE.BoxGeometry(1.4, 2.3, 0.05), std(C.prop, 0.95));
+  wallSlab.position.set(0, 1.15, wallFace + 0.025);
+  wallSlab.receiveShadow = true;
+  const wallLine = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.012, 4e-3), std(C.teal, 0.6));
+  wall.add(wallSlab, wallLine);
+  scene.add(wall);
+  const table = new THREE.Group();
+  const tableTop = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.05, 0.45), std(C.prop, 0.9));
+  const tableLeg = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.05, 1, 16), std(C.stick, 0.7));
+  tableTop.castShadow = tableTop.receiveShadow = true;
+  tableLeg.castShadow = true;
+  table.add(tableTop, tableLeg);
+  scene.add(table);
+  const arcShoulder = new GoniometerArc(180, 0.36);
+  const arcER = new GoniometerArc(90, 0.25);
+  man.torso.add(arcShoulder.group, arcER.group);
+  let elapsed = 0;
+  let playing = opts.playing;
+  let angle = 0;
+  let reps = 0;
+  let phase = "rest";
+  let lastRep = -1;
+  let lastEmittedAngle = NaN;
+  let effectiveTarget = 0;
+  let wallTargetHeight = 0;
+  let liveAngle = null;
+  const listeners = { angle: /* @__PURE__ */ new Set(), phase: /* @__PURE__ */ new Set(), rep: /* @__PURE__ */ new Set() };
+  const emit = (k, v) => {
+    for (const cb of listeners[k]) cb(v);
+  };
+  const armSide = () => opts.mirror ? other(opts.affectedSide) : opts.affectedSide;
+  const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3(), tmpC = new THREE.Vector3();
+  const invTorso = new THREE.Quaternion();
+  function worldToTrunkDir(x, y, z) {
+    invTorso.copy(man.torso.quaternion).invert();
+    return tmpC.set(x, y, z).normalize().applyQuaternion(invTorso).clone();
+  }
+  function configure(resetTime = true) {
+    const spec = EXERCISES[opts.exercise];
+    const side = armSide();
+    const s = sideSign(side);
+    effectiveTarget = clampTarget(opts.exercise, opts.target);
+    if (opts.exercise === "wall_walk") {
+      const w = wallHeightFor(effectiveTarget, WALL_HAND_Z, UPPER, HAND_OFFSET);
+      wallTargetHeight = w.height;
+      effectiveTarget = Math.round(w.elevation);
+    }
+    man.highlight(side, armMat);
+    man.torso.rotation.set(opts.exercise === "pendulum" ? deg2rad(PENDULUM_LEAN) : 0, 0, 0);
+    stick.visible = spec.prop === "wand";
+    wall.visible = spec.prop === "wall";
+    table.visible = spec.prop === "table";
+    wallLine.position.set(s * SH_X, HIP_Y + SH_Y + wallTargetHeight, wallFace - 3e-3);
+    const shoulderPos = new THREE.Vector3(s * SH_X, SH_Y, 0);
+    arcShoulder.group.visible = opts.showArc && (spec.plane === "sagittal" || spec.plane === "frontal");
+    arcER.group.visible = opts.showArc && spec.plane === "horizontal";
+    if (spec.plane === "sagittal") {
+      arcShoulder.orient(shoulderPos.clone().add(new THREE.Vector3(s * 0.08, 0, 0)), DOWN, FORWARD);
+    } else if (spec.plane === "frontal") {
+      arcShoulder.orient(shoulderPos.clone().add(new THREE.Vector3(0, 0, 0.08)), DOWN, new THREE.Vector3(s, 0, 0));
+    } else if (spec.plane === "horizontal") {
+      arcER.orient(new THREE.Vector3(s * SH_X, SH_Y - UPPER - 0.03, 0), FORWARD, new THREE.Vector3(s, 0, 0));
+    }
+    arcShoulder.setTarget(effectiveTarget);
+    arcER.setTarget(effectiveTarget);
+    arcShoulder.setLive(liveAngle);
+    arcER.setLive(liveAngle);
+    if (resetTime) {
+      elapsed = 0;
+      lastRep = -1;
+      reps = 0;
+      applyPose(0, 0);
+      if (spec.prop === "table") placeTable();
+    }
+  }
+  function placeTable() {
+    man.root.updateMatrixWorld(true);
+    const hand = man.arms[other(armSide())].hand.getWorldPosition(tmpA);
+    const topY = hand.y - HAND_R - 0.025;
+    tableTop.position.set(hand.x, topY, hand.z + 0.1);
+    tableLeg.scale.y = Math.max(0.1, topY - 0.025);
+    tableLeg.position.set(hand.x, (topY - 0.025) / 2, hand.z + 0.1);
+  }
+  function applyPose(progress, t) {
+    const side = armSide();
+    const s = sideSign(side);
+    const moving = man.arms[side];
+    const helper = man.arms[other(side)];
+    const target = effectiveTarget;
+    switch (opts.exercise) {
+      case "er": {
+        angle = progress * target;
+        moving.pose(elevationDir(0, 0, s), s * angle, 90);
+        helper.relax();
+        break;
+      }
+      case "wand_er": {
+        angle = progress * target;
+        moving.pose(elevationDir(0, 0, s), s * angle, 90);
+        helper.pose(elevationDir(0, 0, -s), s * angle, 90);
+        break;
+      }
+      case "flexion": {
+        angle = progress * target;
+        moving.pose(elevationDir(angle, 90, s), 0, 6);
+        helper.relax();
+        break;
+      }
+      case "abduction": {
+        angle = progress * target;
+        moving.pose(elevationDir(angle, 0, s), 0, 6);
+        helper.relax();
+        break;
+      }
+      case "wand_flexion": {
+        angle = progress * target;
+        moving.pose(elevationDir(angle, 90, s), 0, 8);
+        helper.pose(elevationDir(angle, 90, -s), 0, 8);
+        break;
+      }
+      case "wall_walk": {
+        const h0 = -0.22;
+        const p = phase === "move" ? staircase(progress, 6) : progress;
+        const h = h0 + (wallTargetHeight - h0) * p;
+        const ik = sagittalIK(WALL_HAND_Z, h, UPPER, HAND_OFFSET);
+        angle = Math.max(0, ik.elevation);
+        moving.pose(elevationDir(ik.elevation, 90, s), 0, ik.elbowFlex);
+        helper.relax();
+        break;
+      }
+      case "pendulum": {
+        const phi = 2 * Math.PI * t / PENDULUM_PERIOD;
+        const r = PENDULUM_RADIUS * (0.6 + 0.4 * Math.min(1, t / 3));
+        moving.pose(worldToTrunkDir(r * Math.cos(phi), -1, r * Math.sin(phi)), 0, 6);
+        helper.pose(worldToTrunkDir(-s * 0.05, -0.72, 0.62), 0, 15);
+        angle = NaN;
+        break;
+      }
+    }
+    if (stick.visible) {
+      man.root.updateMatrixWorld(true);
+      moving.hand.getWorldPosition(tmpA);
+      helper.hand.getWorldPosition(tmpB);
+      const len = tmpA.distanceTo(tmpB);
+      stick.position.addVectors(tmpA, tmpB).multiplyScalar(0.5);
+      stick.quaternion.setFromUnitVectors(UP, tmpB.sub(tmpA).normalize());
+      stick.scale.set(1, len + 0.45, 1);
+    }
+    if (Number.isFinite(angle)) {
+      arcShoulder.setValue(angle);
+      arcER.setValue(angle);
+    }
+  }
+  const camPos = new THREE.Vector3(0, 1.35, 3.6);
+  const camLook = new THREE.Vector3(0, 1.1, 0);
+  const wantPos = new THREE.Vector3();
+  const wantLook = new THREE.Vector3();
+  let aspect = 1;
+  const reduceMotion = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let snapCamera = true;
+  function cameraGoal() {
+    const spec = EXERCISES[opts.exercise];
+    const s = sideSign(armSide());
+    let view = opts.view;
+    if (view === "auto") {
+      view = spec.plane === "sagittal" ? "side" : spec.plane === "frontal" ? "front" : spec.plane === "none" ? "three-quarter" : "front";
+    }
+    if (spec.prop === "wall") view = "side";
+    if (spec.plane === "horizontal" && opts.view === "auto") {
+      wantPos.set(s * 0.6, 2.45, 2.55);
+      wantLook.set(0, 1.05, 0.15);
+    } else if (view === "front") {
+      wantPos.set(0, 1.35, 3.6);
+      wantLook.set(0, 1.12, 0);
+    } else if (view === "side") {
+      wantPos.set(s * 3.4, 1.4, 0.45);
+      wantLook.set(0, 1.15, 0.12);
+    } else {
+      wantPos.set(s * 2.3, 1.6, 2.8);
+      wantLook.set(0, 1.05, 0.15);
+    }
+    if (aspect < 1) {
+      tmpA.subVectors(wantPos, wantLook).multiplyScalar(Math.pow(1 / aspect, 0.85));
+      wantPos.copy(wantLook).add(tmpA);
+    }
+  }
+  function resize() {
+    const w = Math.max(1, container.clientWidth);
+    const h = Math.max(1, container.clientHeight);
+    aspect = w / h;
+    renderer.setSize(w, h, false);
+    camera.aspect = aspect;
+    camera.updateProjectionMatrix();
+  }
+  const ro = new ResizeObserver(resize);
+  ro.observe(container);
+  resize();
+  let raf = 0;
+  let last = performance.now();
+  function frame(now) {
+    raf = requestAnimationFrame(frame);
+    const dt = Math.min(0.05, (now - last) / 1e3);
+    last = now;
+    if (playing) elapsed += dt;
+    const spec = EXERCISES[opts.exercise];
+    if (spec.continuous) {
+      const rep = Math.floor(elapsed / PENDULUM_PERIOD);
+      if (rep !== lastRep) {
+        if (lastRep >= 0) {
+          reps = rep;
+          emit("rep", reps);
+        }
+        lastRep = rep;
+      }
+      if (phase !== "move") {
+        phase = "move";
+        emit("phase", phase);
+      }
+      applyPose(0, elapsed);
+    } else {
+      const timing = timingFor(effectiveTarget, opts.speedDegPerS, opts.holdS, opts.restS);
+      const c = cycleAt(elapsed, timing);
+      if (c.phase !== phase) {
+        phase = c.phase;
+        emit("phase", phase);
+      }
+      if (c.rep !== lastRep) {
+        if (lastRep >= 0) {
+          reps = c.rep;
+          emit("rep", reps);
+        }
+        lastRep = c.rep;
+      }
+      applyPose(c.progress, elapsed);
+    }
+    if (Number.isFinite(angle) && Math.round(angle) !== lastEmittedAngle) {
+      lastEmittedAngle = Math.round(angle);
+      emit("angle", lastEmittedAngle);
+    }
+    cameraGoal();
+    const k = snapCamera || reduceMotion ? 1 : 1 - Math.exp(-dt * 5);
+    camPos.lerp(wantPos, k);
+    camLook.lerp(wantLook, k);
+    snapCamera = false;
+    camera.position.copy(camPos);
+    camera.lookAt(camLook);
+    renderer.render(scene, camera);
+  }
+  configure();
+  raf = requestAnimationFrame(frame);
+  return {
+    setOptions(input) {
+      const patch = Object.fromEntries(Object.entries(input).filter(([, v]) => v !== void 0));
+      const changed = (keys) => keys.some((k) => k in patch && patch[k] !== opts[k]);
+      const restart = changed(["exercise", "affectedSide", "mirror"]);
+      const soft = changed(["target", "holdS", "restS", "speedDegPerS", "showArc"]);
+      Object.assign(opts, patch);
+      if ("playing" in patch && patch.playing !== void 0) playing = patch.playing;
+      if (restart) configure(true);
+      else if (soft) configure(false);
+    },
+    play() {
+      playing = true;
+    },
+    pause() {
+      playing = false;
+    },
+    reset() {
+      configure();
+    },
+    setLiveAngle(deg2) {
+      liveAngle = deg2;
+      arcShoulder.setLive(deg2);
+      arcER.setLive(deg2);
+    },
+    on(event, cb) {
+      listeners[event].add(cb);
+      return () => listeners[event].delete(cb);
+    },
+    get angle() {
+      return angle;
+    },
+    get reps() {
+      return reps;
+    },
+    get phase() {
+      return phase;
+    },
+    get effectiveTarget() {
+      return effectiveTarget;
+    },
+    dispose() {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+      scene.traverse((o) => {
+        const m = o;
+        if (m.geometry) m.geometry.dispose();
+        const mat = m.material;
+        if (Array.isArray(mat)) mat.forEach((x) => x.dispose());
+        else mat?.dispose();
+      });
+      renderer.dispose();
+      renderer.domElement.remove();
+    }
+  };
+}
+
+// preview/main.ts
+var COPY = {
+  wand_er: { name: "Wand outward rotation", text: "Keep your elbow tucked at your side and let the stick guide your arm outward." },
+  er: { name: "Outward rotation", text: "Elbow bent and tucked at your side. Turn your forearm outward, like opening a door." },
+  flexion: { name: "Forward raise", text: "Raise your arm forward and up, only as far as the marked target." },
+  abduction: { name: "Side raise", text: "Raise your arm out to the side, thumb up, then lower it slowly." },
+  wand_flexion: { name: "Wand forward raise", text: "Hold the stick with both hands and lift it forward and up. Your good arm does most of the work." },
+  wall_walk: { name: "Wall walk", text: "Face the wall and walk your fingers up it. Stop at the line, then slide back down." },
+  pendulum: { name: "Pendulum swings", text: "Pendulum swings loosen the joint before it\u2019s asked to do any real work. Let your arm hang and sway \u2014 don\u2019t lift." }
+};
+var PHASE = { move: "Move slowly", hold: "Hold", return: "Back to start", rest: "Rest" };
+var $ = (id) => document.getElementById(id);
+var stage = $("stage-canvas");
+var state = { exercise: "wand_er", side: "left", target: 45, hold: 5, mirror: true, view: "auto", playing: true, live: false, liveDeg: 30 };
+var avatar;
+try {
+  avatar = createFollowAvatar(stage, {
+    exercise: state.exercise,
+    affectedSide: state.side,
+    target: state.target,
+    holdS: state.hold,
+    mirror: state.mirror,
+    view: state.view
+  });
+} catch (err) {
+  $("fallback").hidden = false;
+  throw err;
+}
+var deg = $("ov-deg");
+var of = $("ov-of");
+var phaseEl = $("ov-phase");
+var repsEl = $("ov-reps");
+var liveEl = $("ov-live");
+avatar.on("angle", (d) => {
+  deg.textContent = `${d}\xB0`;
+});
+avatar.on("phase", (p) => {
+  phaseEl.textContent = state.exercise === "pendulum" ? "Small circles" : PHASE[p];
+});
+avatar.on("rep", (n) => {
+  repsEl.textContent = state.exercise === "pendulum" ? `Circles: ${n}` : `Reps done: ${n}`;
+});
+var list = $("exercise-list");
+for (const id of Object.keys(COPY)) {
+  const label = document.createElement("label");
+  label.className = "chip";
+  label.innerHTML = `<input type="radio" name="exercise" id="ex-${id}" value="${id}"><span>${COPY[id].name}</span>`;
+  list.appendChild(label);
+}
+var targetInput = $("target");
+var targetOut = $("target-out");
+var holdInput = $("hold");
+var holdOut = $("hold-out");
+function resetReps() {
+  repsEl.textContent = EXERCISES[state.exercise].continuous ? "Circles: 0" : "Reps done: 0";
+}
+function render() {
+  const spec = EXERCISES[state.exercise];
+  const pend = spec.continuous;
+  $(`ex-${state.exercise}`).checked = true;
+  $("ex-text").textContent = COPY[state.exercise].text;
+  targetInput.min = String(spec.minTarget);
+  targetInput.max = String(spec.maxTarget);
+  targetInput.disabled = pend;
+  holdInput.disabled = pend;
+  targetInput.value = String(state.target);
+  const eff = pend ? 0 : avatar.effectiveTarget;
+  targetOut.textContent = pend ? "Not used for swings" : `${eff}\xB0`;
+  holdOut.textContent = pend ? "Not used for swings" : `${state.hold} s`;
+  of.textContent = pend ? "Let the arm hang and sway" : `of ${eff}\xB0 target`;
+  if (pend) deg.textContent = "Swing";
+  $("target-note").hidden = !(state.exercise === "wall_walk" && eff < state.target);
+  $("target-note").textContent = `Limited to ${eff}\xB0, as high as the hand can reach on the wall.`;
+  $("play").textContent = state.playing ? "Pause" : "Play";
+  const moving = state.mirror ? state.side === "left" ? "right" : "left" : state.side;
+  $("mirror-note").textContent = state.mirror ? `The model moves its ${moving} arm, so it appears on the same side of the screen as your ${state.side} shoulder.` : `The model moves its ${moving} arm, matching your ${state.side} shoulder directly.`;
+  stage.setAttribute("aria-label", `Model demonstrating ${COPY[state.exercise].name}${pend ? "" : ` up to ${eff} degrees`}, ${state.side} shoulder`);
+  liveEl.hidden = !state.live || pend;
+  liveEl.textContent = `Patient ${state.liveDeg}\xB0`;
+  for (const el of document.querySelectorAll('input[name="side"]')) el.checked = el.value === state.side;
+  for (const el of document.querySelectorAll('input[name="view"]')) el.checked = el.value === state.view;
+}
+list.addEventListener("change", (e) => {
+  const id = e.target.value;
+  state.exercise = id;
+  state.target = EXERCISES[id].defaultTarget;
+  avatar.setOptions({ exercise: id, target: state.target });
+  resetReps();
+  render();
+});
+for (const el of document.querySelectorAll('input[name="side"]')) {
+  el.addEventListener("change", () => {
+    state.side = el.value;
+    avatar.setOptions({ affectedSide: state.side });
+    resetReps();
+    render();
+  });
+}
+for (const el of document.querySelectorAll('input[name="view"]')) {
+  el.addEventListener("change", () => {
+    state.view = el.value;
+    avatar.setOptions({ view: state.view });
+  });
+}
+targetInput.addEventListener("input", () => {
+  state.target = clampTarget(state.exercise, Number(targetInput.value));
+  avatar.setOptions({ target: state.target });
+  render();
+});
+holdInput.addEventListener("input", () => {
+  state.hold = Number(holdInput.value);
+  avatar.setOptions({ holdS: state.hold });
+  render();
+});
+$("mirror").addEventListener("change", (e) => {
+  state.mirror = e.target.checked;
+  avatar.setOptions({ mirror: state.mirror });
+  resetReps();
+  render();
+});
+$("play").addEventListener("click", () => {
+  state.playing = !state.playing;
+  if (state.playing) avatar.play();
+  else avatar.pause();
+  render();
+});
+$("restart").addEventListener("click", () => {
+  avatar.reset();
+  state.playing = true;
+  avatar.play();
+  resetReps();
+  render();
+});
+var liveToggle = $("live-on");
+var liveInput = $("live");
+var syncLive = () => {
+  state.live = liveToggle.checked;
+  state.liveDeg = Number(liveInput.value);
+  liveInput.disabled = !state.live;
+  avatar.setLiveAngle(state.live ? state.liveDeg : null);
+  $("live-out").textContent = state.live ? `${state.liveDeg}\xB0` : "Off";
+  render();
+};
+liveToggle.addEventListener("change", syncLive);
+liveInput.addEventListener("input", syncLive);
+resetReps();
+render();
+syncLive();
+
+</script>

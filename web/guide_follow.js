@@ -5,8 +5,9 @@ import { EXERCISES } from './motion.js';
 const MAP = {
   shoulder_abduction: 'abduction',
   abduction: 'abduction',
+  shoulder_flexion: 'flexion',
   flexion: 'flexion',
-  assisted_flexion: 'flexion',
+  assisted_flexion: 'wand_flexion',
   wand_flexion: 'wand_flexion',
   wall_climb: 'wall_walk',
   wall_walk: 'wall_walk',
@@ -51,13 +52,15 @@ function mount(selector) {
   stage.className = 'guide-stage';
   host.appendChild(stage);
   ensureCaption();
-  const exercise = mapExercise(host.dataset.exercise || window.RehabGuideExercise || 'abduction');
+  const demo = host.dataset.avatar || window.RehabGuideAvatar
+    || mapExercise(host.dataset.exercise || window.RehabGuideExercise || 'abduction');
+  const exercise = mapExercise(demo);
   const side = (host.dataset.side || window.RehabGuideSide || 'right') === 'left' ? 'left' : 'right';
-  const rawTarget = Number(host.dataset.target || window.RehabGuideTarget || EXERCISES[exercise].defaultTarget);
+  const rawTarget = Number(host.dataset.target || window.RehabGuideTarget || EXERCISES[exercise]?.defaultTarget || 80);
   avatar = createFollowAvatar(stage, {
     exercise,
     affectedSide: side,
-    target: Number.isFinite(rawTarget) ? rawTarget : EXERCISES[exercise].defaultTarget,
+    target: Number.isFinite(rawTarget) ? rawTarget : (EXERCISES[exercise]?.defaultTarget || 80),
     mirror: true,
     showArc: true,
     playing: true,

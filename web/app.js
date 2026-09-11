@@ -131,6 +131,7 @@ function goto(hash) {
 
 function mountGuide(selector, meta) {
   if (meta?.exercise) window.RehabGuideExercise = meta.exercise;
+  if (meta?.avatar) window.RehabGuideAvatar = meta.avatar;
   if (meta?.target != null) window.RehabGuideTarget = meta.target;
   if (meta?.side) window.RehabGuideSide = meta.side;
   const tryMount = (n) => {
@@ -141,6 +142,45 @@ function mountGuide(selector, meta) {
     if (n < 40) setTimeout(() => tryMount(n + 1), 50);
   };
   tryMount(0);
+}
+
+async function loadExerciseLibrary() {
+  if (window.__rehabExercises) return window.__rehabExercises;
+  try {
+    window.__rehabExercises = await api('exercises');
+  } catch {
+    window.__rehabExercises = [];
+  }
+  return window.__rehabExercises;
+}
+
+function exercisePickerHtml(exercises, selectedId) {
+  return `<div class="exercise-picker" id="exercise-picker" role="listbox" aria-label="Choose exercise">
+    ${(exercises || []).map(ex => `<button type="button" role="option" data-exercise="${ex.exercise_id}"
+      data-avatar="${ex.avatar_demo || ''}" data-target="${ex.target_range || 80}"
+      class="${ex.exercise_id === selectedId ? 'is-selected' : ''}" aria-selected="${ex.exercise_id === selectedId}">
+      <strong>${ex.name}</strong>
+      <span>${ex.instructions || ''}</span>
+    </button>`).join('')}
+  </div>`;
+}
+
+function bindExercisePicker(root, onPick) {
+  const box = root?.querySelector?.('#exercise-picker') || $('#exercise-picker');
+  if (!box) return;
+  box.querySelectorAll('[data-exercise]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      box.querySelectorAll('[data-exercise]').forEach(b => {
+        b.classList.toggle('is-selected', b === btn);
+        b.setAttribute('aria-selected', b === btn ? 'true' : 'false');
+      });
+      onPick?.({
+        exercise_id: btn.dataset.exercise,
+        avatar_demo: btn.dataset.avatar,
+        target_range: Number(btn.dataset.target) || 80,
+      });
+    });
+  });
 }
 
 function isConsumerMode() {
@@ -405,12 +445,17 @@ async function renderConsumerHome() {
   const painNow = progress.pain_movement?.current ?? scores.pain_movement ?? me.memory?.ocr_pain;
   const demo = Boolean(me.is_demo);
   const name = me.display_name || 'there';
+  const exercises = await loadExerciseLibrary();
+  let selectedExercise = exercises.find(e => e.exercise_id === 'shoulder_abduction')?.exercise_id
+    || exercises[0]?.exercise_id
+    || 'shoulder_abduction';
   consumerShell({
     step: 2,
     body: `<section class="dash-slide">
       <p class="eyebrow">${demo ? 'Personalized · demo labelled' : 'Personalized for you'}</p>
       <h1>${name}</h1>
-      <p class="lede">Your agent built this from the call${me.memory?.ocr_engine ? ' and OCR' : ''}. Stored values only — not a diagnosis.</p>
+      <p class="lede">Your agent built this from the call${me.memory?.ocr_engine ? ' and OCR' : ''}. Pick an exercise — the 3D guide will demonstrate it. Stored values only — not a diagnosis.</p>
+      ${exercisePickerHtml(exercises, selectedExercise)}
       <button class="primary start-giant" id="go">Start session</button>
       <p class="empty">${me.phone_pose_available
         ? 'Phone pose available on server.'
@@ -433,7 +478,8 @@ async function renderConsumerHome() {
       </div>
     </section>`,
   }, '#/app/home');
-  $('#go')?.addEventListener('click', () => startConsumerSession());
+  bindExercisePicker(document, pick => { selectedExercise = pick.exercise_id; });
+  $('#go')?.addEventListener('click', () => startConsumerSession(undefined, selectedExercise));
 }
 
 function renderLogin() {
@@ -648,7 +694,7 @@ async function renderPatients() {
 }
 
 async function renderPatient(id) {
-  const [patient, assessments, sessions, rom, pain, reports, notes, recordings, plans] = await Promise.all([
+  const [patient, assessments, sessions, rom, pain, reports, notes, recordings, plans, exercises] = await Promise.all([
     api('patients/' + id),
     api(`patients/${id}/assessments`),
     api(`patients/${id}/sessions`),
@@ -658,24 +704,31 @@ async function renderPatient(id) {
     api(`patients/${id}/notes`),
     api(`patients/${id}/recordings`),
     api('plans?patient_id=' + id),
+    loadExerciseLibrary(),
   ]);
   state.tab = state.tab || 'overview';
+  let selectedExercise = exercises[0]?.exercise_id || 'shoulder_abduction';
   const p = patient.progress || {};
   const tabs = ['overview','assessment','ROM','pain','exercises','sessions','recordings','progress','AI','notes','reports'];
   shell({
     header: `<p class="eyebrow">${patient.is_demo ? 'DEMO PATIENT' : 'PATIENT'} · ${patient.mrn}</p>
       <h1>${patient.full_name}</h1>
       <p>${patient.clinician_diagnosis || ''} · Affected ${patient.affected_side} shoulder</p>`,
-    body: `<div class="row" style="margin-bottom:16px">
-        ${state.user.role !== 'ADMIN' ? `<button class="primary" id="start-assess">Start assessment</button>
-        <button class="ghost" id="start-rehab">Start rehab session</button>` : ''}
-        <button class="ghost" id="export-json" type="button">Export JSON</button>
-        <button class="ghost" id="export-xlsx" type="button">Export Excel</button>
-        <span class="empty" id="export-status"></span>
+    body: `<div class="panel" style="margin-bottom:16px">
+        <p class="eyebrow">Choose exercise · 3D guide follows this demo</p>
+        ${exercisePickerHtml(exercises, selectedExercise)}
+        <div class="row">
+          ${state.user.role !== 'ADMIN' ? `<button class="primary" id="start-assess">Start assessment</button>
+          <button class="ghost" id="start-rehab">Start rehab session</button>` : ''}
+          <button class="ghost" id="export-json" type="button">Export JSON</button>
+          <button class="ghost" id="export-xlsx" type="button">Export Excel</button>
+          <span class="empty" id="export-status"></span>
+        </div>
       </div>
       <div class="tabs">${tabs.map(t => `<button data-tab="${t}" class="${state.tab===t?'active':''}">${t}</button>`).join('')}</div>
       <div id="tab"></div>`
   }, '#/patients');
+  bindExercisePicker(document, pick => { selectedExercise = pick.exercise_id; });
   const tabEl = $('#tab');
   const paint = () => {
     if (state.tab === 'overview') {
@@ -722,9 +775,14 @@ async function renderPatient(id) {
       const painMove = pain.map(r => r.movement).filter(v => v != null);
       tabEl.innerHTML = `<div class="panel"><h2>Pain during movement</h2><p class="sub">${painMove.length} stored scores</p>${chart(painMove, '#b94a32')}</div>`;
     } else if (state.tab === 'sessions' || state.tab === 'exercises') {
-      tabEl.innerHTML = `<div class="panel">${table(['Session','Exercise','Reps','Peak','Source'], sessions.map(s => [
-        s.id, s.exercise_id, `${s.reps}/${s.goal}`, deg(s.peak_angle), s.source
-      ]))}</div>`;
+      tabEl.innerHTML = `<div class="panel">
+        <h2>Approved exercises</h2>
+        ${exercisePickerHtml(exercises, selectedExercise)}
+        ${table(['Session','Exercise','Reps','Peak','Source'], sessions.map(s => [
+          s.id, s.exercise_id, `${s.reps}/${s.goal}`, deg(s.peak_angle), s.source
+        ]))}
+      </div>`;
+      bindExercisePicker(tabEl, pick => { selectedExercise = pick.exercise_id; });
     } else if (state.tab === 'recordings') {
       tabEl.innerHTML = `<div class="panel">${recordings.map(r => `<div class="history-item"><a href="#/recordings/${r.id}">${r.session_id}</a> · ${r.kind}</div>`).join('') || '<p class="empty">No consented recordings.</p>'}</div>`;
     } else if (state.tab === 'AI') {
@@ -739,8 +797,8 @@ async function renderPatient(id) {
   };
   paint();
   document.querySelectorAll('[data-tab]').forEach(btn => btn.addEventListener('click', () => { state.tab = btn.dataset.tab; document.querySelectorAll('[data-tab]').forEach(b => b.classList.toggle('active', b===btn)); paint(); }));
-  $('#start-assess')?.addEventListener('click', () => startLive(id, 'shoulder_abduction', true));
-  $('#start-rehab')?.addEventListener('click', () => startLive(id, 'shoulder_abduction', false));
+  $('#start-assess')?.addEventListener('click', () => startLive(id, selectedExercise, true));
+  $('#start-rehab')?.addEventListener('click', () => startLive(id, selectedExercise, false));
   $('#export-json')?.addEventListener('click', async () => {
     try { $('#export-status').textContent = 'Preparing JSON…'; await downloadAuthorized(`patients/${id}/export.json`, `rehabai-${id}.json`); $('#export-status').textContent = 'JSON exported.'; }
     catch (err) { $('#export-status').textContent = err.message; }
@@ -751,11 +809,20 @@ async function renderPatient(id) {
   });
 }
 
-async function startLive(patientId, exercise, assessment, capture = 'auto') {
+async function startLive(patientId, exercise, assessment, capture = 'auto', extras = {}) {
   try {
+    const lib = await loadExerciseLibrary();
+    const spec = (lib || []).find(e => e.exercise_id === exercise) || {};
+    const target = Number(extras.target || spec.target_range || 80);
     const session = await api('sessions', {
-      patient_id: patientId, exercise_id: exercise, side: 'right', target: 80, goal: 5,
-      consent_recording: false, kind: assessment ? 'assessment' : 'rehab', capture
+      patient_id: patientId,
+      exercise_id: exercise,
+      side: extras.side || 'right',
+      target,
+      goal: extras.goal || 5,
+      consent_recording: false,
+      kind: assessment ? 'assessment' : 'rehab',
+      capture,
     });
     goto('#/live/' + session.id);
   } catch (e) {
@@ -767,7 +834,9 @@ async function startLive(patientId, exercise, assessment, capture = 'auto') {
 }
 
 async function renderLive(sessionId, opts = {}) {
-  const [session, script] = await Promise.all([api('sessions/' + sessionId), api('intake/script')]);
+  const [session, script, exercises] = await Promise.all([
+    api('sessions/' + sessionId), api('intake/script'), loadExerciseLibrary(),
+  ]);
   closeLive();
   const voice = window.RehabIntake || {};
   const fields = script.fields || [];
@@ -779,6 +848,9 @@ async function renderLive(sessionId, opts = {}) {
   let paused = false;
   let phase = needsIntake ? 'intake' : 'measure';
   let painAfter = null;
+  let painCheck = null;
+  const exSpec = (exercises || []).find(e => e.exercise_id === session.exercise_id) || {};
+  const avatarDemo = exSpec.avatar_demo || session.exercise_id;
 
   const current = () => fields[index];
   const promptOf = f => (language === 'hi-IN' ? f.prompt_hi : f.prompt_en);
@@ -791,7 +863,7 @@ async function renderLive(sessionId, opts = {}) {
       <div class="grid-live guide-first">
         <div class="view guide">
           <div class="view-label">3D GUIDE · FOLLOW ALONG · NOT A DIAGNOSIS</div>
-          <div id="guide3d" class="guide-host" data-exercise="${session.exercise_id}" data-target="${session.target}" data-side="${session.side || 'right'}"></div>
+          <div id="guide3d" class="guide-host" data-exercise="${session.exercise_id}" data-avatar="${avatarDemo}" data-target="${session.target}" data-side="${session.side || 'right'}"></div>
         </div>
         <div>
           <div class="intake-panel" id="intake-panel">
@@ -843,11 +915,10 @@ async function renderLive(sessionId, opts = {}) {
             </div>` : ''}
           </div>
           <div class="intake-panel" id="debrief-panel" hidden>
-            <p class="eyebrow">After this session</p>
+            <p class="eyebrow">${(exSpec.name || session.exercise_id.replaceAll('_', ' '))} done</p>
             <div id="debrief-metrics" class="metrics" style="margin-bottom:16px"></div>
-            <h2>Pain after movement, 0 to 10</h2>
-            <p class="intake-status" id="debrief-status">Tap a number or speak. There is no default score.</p>
-            <div id="debrief-chips"></div>
+            <div id="debrief-pain"></div>
+            <p class="intake-status" id="debrief-status">Tap a face. There is no default score.</p>
             <div class="row">
               <button class="primary mic-btn" id="debrief-mic" type="button">Speak</button>
               <button class="danger" id="debrief-save" type="button">Save session</button>
@@ -860,6 +931,7 @@ async function renderLive(sessionId, opts = {}) {
   liveCanvas = null;
   mountGuide('#guide3d', {
     exercise: session.exercise_id,
+    avatar: avatarDemo,
     target: session.target,
     side: session.side || 'right',
   });
@@ -1011,12 +1083,25 @@ async function renderLive(sessionId, opts = {}) {
         ['Safety', tel.safety?.level || '—'],
       ].map(([k, v]) => `<div class="metric"><span>${k}</span><b>${v}</b></div>`).join('');
     }
-    paintChips($('#debrief-chips'), 10, 'pain');
-    $('#debrief-chips').querySelectorAll('button').forEach(btn => btn.addEventListener('click', () => {
-      painAfter = Number(btn.dataset.val);
-      $('#debrief-chips').querySelectorAll('button').forEach(b => b.classList.toggle('active', b === btn));
-      $('#debrief-status').textContent = 'Pain after ' + painAfter + ' out of 10. Press Save session to store it.';
-    }));
+    const host = $('#debrief-pain');
+    if (host && window.RehabPain?.renderPainCheck) {
+      painCheck = window.RehabPain.renderPainCheck(host, {
+        moment: 'after',
+        previousValue: null,
+        onChange: (v) => {
+          painAfter = v;
+          $('#debrief-status').textContent = 'Pain after ' + painAfter + ' out of 10. Press Save session to store it.';
+        },
+      });
+    } else if (host) {
+      host.innerHTML = '<div id="debrief-chips"></div>';
+      paintChips($('#debrief-chips'), 10, 'pain');
+      $('#debrief-chips').querySelectorAll('button').forEach(btn => btn.addEventListener('click', () => {
+        painAfter = Number(btn.dataset.val);
+        $('#debrief-chips').querySelectorAll('button').forEach(b => b.classList.toggle('active', b === btn));
+        $('#debrief-status').textContent = 'Pain after ' + painAfter + ' out of 10. Press Save session to store it.';
+      }));
+    }
     voice.speak?.('Pain after this session, zero to ten?', language);
   }
 
@@ -1143,8 +1228,9 @@ async function renderLive(sessionId, opts = {}) {
       }
       if (parsed.intent === 'number') {
         painAfter = parsed.parsed_value;
+        painCheck?.setValue?.(painAfter);
         $('#debrief-status').textContent = 'Pain after ' + painAfter + ' out of 10. Press Save session to store it.';
-        $('#debrief-chips').querySelectorAll('button').forEach(b => b.classList.toggle('active', Number(b.dataset.val) === painAfter));
+        $('#debrief-chips')?.querySelectorAll?.('button')?.forEach?.(b => b.classList.toggle('active', Number(b.dataset.val) === painAfter));
         voice.speak?.('Pain after ' + painAfter + ' out of 10.', language);
       } else {
         $('#debrief-status').textContent = parsed.spoken;
@@ -1515,11 +1601,15 @@ async function ensureConsumerLogin() {
   localStorage.setItem('rehabai_token', res.token);
 }
 
-async function startConsumerSession(capture) {
+async function startConsumerSession(capture, exerciseId) {
   const me = await api('consumer/me');
   state.consumerPatientId = me.patient_id;
-  // Assessment reuses confirmed Talk memory; otherwise rehab skips the six-question UI.
-  await startLive(me.patient_id, 'shoulder_abduction', Boolean(me.intake_complete), capture);
+  await startLive(
+    me.patient_id,
+    exerciseId || 'shoulder_abduction',
+    Boolean(me.intake_complete),
+    capture,
+  );
 }
 
 async function renderPatientProgress() {

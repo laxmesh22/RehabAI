@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pain check preview</title>
+<meta name="color-scheme" content="light">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500&family=Inter:wght@400;500;600;700&display=swap">
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #EEF2EF; --ink: #1F2B29; --ink-2: #4B5955; --teal: #2C6E62; --teal-tint: #DCE8E3;
+    --gold: #D9A441; --coral: #C1524C; --card: #FBFAF7; --rule: #CDD8D3;
+    --display: "Fraunces", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+    --body: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { background: var(--bg); margin: 0; }
+  body { font-family: var(--body); color: var(--ink); padding: 32px 16px 64px; }
+  .wrap { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 28px; }
+  h1 { font-family: var(--display); font-weight: 500; font-size: clamp(1.7rem, 1.4rem + 1vw, 2.2rem); margin: 0; }
+  p.lede { color: var(--ink-2); margin: 0; max-width: 60ch; }
+  .row { display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; }
+  .controls { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; align-items: center; font-size: 0.85rem; color: var(--ink-2); }
+  button.chip { font: inherit; border: 1px solid var(--rule); background: var(--card); color: var(--ink); border-radius: 999px; padding: 6px 14px; cursor: pointer; }
+  button.chip.active { border-color: var(--teal); color: var(--teal); font-weight: 600; }
+
+  /* ---- PainSlider.css, verbatim ---- */
+  .pain-slider { display: flex; flex-direction: column; align-items: center; gap: 12px; width: 100%; max-width: 460px; margin-inline: auto; padding: 20px 18px 18px; background: var(--card); border: 1px solid var(--rule); border-radius: 16px; font-family: var(--body); color: var(--ink); text-align: center; }
+  .pain-slider__question { margin: 0; font-size: 1.05rem; font-weight: 600; }
+  .pain-slider__row { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; width: 100%; }
+  .pain-slider__btn { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; width: 52px; height: 52px; border-radius: 50%; border: 2px solid var(--rule); background: var(--card); cursor: pointer; font-family: var(--body); transition: transform 0.12s ease, border-color 0.12s ease, background 0.12s ease; }
+  .pain-slider__btn:hover { transform: translateY(-1px); }
+  .pain-slider__btn:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  .pain-slider__emoji { font-size: 1.3rem; line-height: 1; }
+  .pain-slider__num { font-size: 0.65rem; color: var(--ink-2); line-height: 1; }
+  .pain-slider__btn[data-tier="low"] { background: color-mix(in srgb, var(--teal) 10%, var(--card)); }
+  .pain-slider__btn[data-tier="moderate"] { background: color-mix(in srgb, var(--gold) 14%, var(--card)); }
+  .pain-slider__btn[data-tier="high"] { background: color-mix(in srgb, var(--coral) 14%, var(--card)); }
+  .pain-slider__btn.is-selected { border-width: 3px; transform: scale(1.12); }
+  .pain-slider__btn.is-selected[data-tier="low"] { border-color: var(--teal); background: color-mix(in srgb, var(--teal) 24%, var(--card)); }
+  .pain-slider__btn.is-selected[data-tier="moderate"] { border-color: var(--gold); background: color-mix(in srgb, var(--gold) 30%, var(--card)); }
+  .pain-slider__btn.is-selected[data-tier="high"] { border-color: var(--coral); background: color-mix(in srgb, var(--coral) 30%, var(--card)); }
+  .pain-slider__scale-ends { display: flex; justify-content: space-between; width: 100%; margin: 0; font-size: 0.78rem; color: var(--ink-2); }
+  .pain-slider__value-label { margin: 0; font-size: 0.95rem; color: var(--ink-2); }
+  .pain-slider__flag { margin: 4px 0 0; padding: 8px 12px; border-radius: 10px; background: rgba(193, 82, 76, 0.12); color: var(--coral); font-size: 0.88rem; font-weight: 600; }
+  @media (max-width: 420px) { .pain-slider__btn { width: 44px; height: 44px; } .pain-slider__emoji { font-size: 1.1rem; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Pain check preview</h1>
+    <p class="lede">Vanilla reproduction of PainSlider.tsx / ExercisePainCheck.tsx for visual and interaction verification. Tap an emoji, or use arrow keys once a button has focus.</p>
+  </header>
+
+  <div class="row">
+    <div id="host-after"></div>
+  </div>
+
+  <div class="controls">
+    <span>Simulate pain_before, to test the flag:</span>
+    <button class="chip active" data-prev="null">none</button>
+    <button class="chip" data-prev="2">2</button>
+    <button class="chip" data-prev="6">6</button>
+  </div>
+
+  <div class="row">
+    <div id="host-before"></div>
+  </div>
+</div>
+
+<script>
+// ---- painScale.ts logic, transliterated to vanilla JS (kept in lockstep with the TS source) ----
+const PAIN_MIN = 0, PAIN_MAX = 10;
+const PAIN_ANCHORS = [
+  { value: 0,  label: 'No pain' }, { value: 2,  label: 'Mild' }, { value: 4,  label: 'Moderate' },
+  { value: 6,  label: 'Fairly severe' }, { value: 8,  label: 'Severe' }, { value: 10, label: 'Worst pain' },
+];
+const PAIN_EMOJI = ['\u{1F604}', '\u{1F642}', '\u{1F642}', '\u{1F610}', '\u{1F610}', '\u{1F615}', '\u{1F615}', '\u{1F641}', '\u{1F623}', '\u{1F616}', '\u{1F62D}'];
+const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
+const snapPain = (v) => clamp(Math.round(v), PAIN_MIN, PAIN_MAX);
+function labelForPain(value) {
+  const v = clamp(value, PAIN_MIN, PAIN_MAX);
+  let best = PAIN_ANCHORS[0], bestDist = Infinity;
+  for (const a of PAIN_ANCHORS) { const d = Math.abs(a.value - v); if (d < bestDist) { bestDist = d; best = a; } }
+  return best.label;
+}
+function tierForPain(value) {
+  const v = snapPain(value);
+  if (v <= 3) return 'low';
+  if (v <= 6) return 'moderate';
+  return 'high';
+}
+function emojiForPain(value) { return PAIN_EMOJI[snapPain(value)]; }
+function shouldFlag(current, previous) {
+  const v = snapPain(current);
+  if (v >= 8) return true;
+  if (previous == null) return false;
+  return v - snapPain(previous) >= 2;
+}
+function flagMessage(moment) {
+  return moment === 'after'
+    ? 'That is more pain than before. Stop here for today and tell your physiotherapist.'
+    : 'This is a lot of pain right now. Check the red-flag questions before starting.';
+}
+
+// ---- PainSlider.tsx, transliterated to vanilla DOM ----
+function mountPainSlider(host, { question, moment = 'after', getPrevious }) {
+  const btns = [];
+  for (let v = PAIN_MIN; v <= PAIN_MAX; v++) {
+    btns.push(`<button type="button" role="radio" aria-checked="false" aria-label="${v} out of 10, ${labelForPain(v)}"
+      class="pain-slider__btn" data-value="${v}" data-tier="${tierForPain(v)}" tabindex="${v === 0 ? 0 : -1}">
+      <span class="pain-slider__emoji">${emojiForPain(v)}</span><span class="pain-slider__num">${v}</span>
+    </button>`);
+  }
+  host.innerHTML = `
+    <div class="pain-slider">
+      <p class="pain-slider__question">${question}</p>
+      <div class="pain-slider__row" role="radiogroup">${btns.join('')}</div>
+      <p class="pain-slider__scale-ends"><span>No pain</span><span>Worst pain</span></p>
+      <p class="value-label pain-slider__value-label">Tap a face to answer</p>
+      <p class="flag pain-slider__flag" role="status" style="display:none;"></p>
+    </div>`;
+  const row = host.querySelector('.pain-slider__row');
+  const valueLabel = host.querySelector('.value-label');
+  const flagEl = host.querySelector('.flag');
+  let value = null;
+
+  function render() {
+    row.querySelectorAll('.pain-slider__btn').forEach((b) => {
+      const v = Number(b.dataset.value);
+      const selected = value === v;
+      b.classList.toggle('is-selected', selected);
+      b.setAttribute('aria-checked', String(selected));
+      b.tabIndex = (value !== null ? selected : v === 0) ? 0 : -1;
+    });
+    const answered = value !== null;
+    valueLabel.textContent = answered ? `${value} — ${labelForPain(value)}` : 'Tap a face to answer';
+    const prev = getPrevious ? getPrevious() : null;
+    const flagged = answered && shouldFlag(value, prev);
+    flagEl.style.display = flagged ? 'block' : 'none';
+    flagEl.textContent = flagged ? flagMessage(moment) : '';
+    host.dataset.value = answered ? String(value) : '';
+    host.dataset.flagged = String(flagged);
+  }
+  render();
+
+  row.querySelectorAll('.pain-slider__btn').forEach((b) => {
+    b.addEventListener('click', () => { value = Number(b.dataset.value); render(); });
+    b.addEventListener('keydown', (e) => {
+      const v = Number(b.dataset.value);
+      let next = null;
+      if (e.key === 'ArrowRight' || e.key === 'ArrowUp') next = Math.min(PAIN_MAX, v + 1);
+      else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') next = Math.max(PAIN_MIN, v - 1);
+      else if (e.key === 'Home') next = PAIN_MIN;
+      else if (e.key === 'End') next = PAIN_MAX;
+      else if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); value = v; render(); return; }
+      else return;
+      e.preventDefault();
+      value = next; render();
+      row.querySelector(`[data-value="${next}"]`).focus();
+    });
+  });
+  return { setTo: (v) => { value = v; render(); }, getValue: () => value };
+}
+
+const afterSlider = mountPainSlider(document.getElementById('host-after'), {
+  question: 'How much pain during that exercise?', moment: 'after',
+  getPrevious: () => window.__prevPain,
+});
+mountPainSlider(document.getElementById('host-before'), { question: 'How much pain right now?', moment: 'before' });
+
+window.__prevPain = null;
+document.querySelectorAll('.controls .chip').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.controls .chip').forEach((b) => b.classList.remove('active'));
+    btn.classList.add('active');
+    const v = btn.dataset.prev;
+    window.__prevPain = v === 'null' ? null : Number(v);
+    const cur = afterSlider.getValue();
+    if (cur !== null) afterSlider.setTo(cur);
+  });
+});
+</script>
+</body>
+</html>

@@ -3,25 +3,27 @@
 ## User request and scope
 MEDHA PS 8 adhesive capsulitis assessment support — not a diagnosis service.
 
-## What’s left / open
-- Rebuild consumer APK when phones should pick up UI + FollowAvatar.
-- Optional: vendor Three.js offline for APK (currently CDN `unpkg.com/three@0.160.1`).
-- Optional Mixamo `web/models/guide.glb` still not wired (procedural FollowAvatar is the coach).
-
-## Product decisions
-- Consumer Talk: Claude agent + deterministic scores + personalized dashboard.
-- **3D coach** replaced with rehab.ai **FollowAvatar** (Three.js mannequin + motion maths + goniometer). Live telemetry angle overlays on the arc; LLM never poses the mesh.
-- Source dumps kept as `*.txt` in repo root for reference; runtime is `web/motion.js`, `web/follow_avatar.js`, `web/guide_follow.js`.
-
 ## This stage
-- Ported `motion.ts` / `FollowAvatar.ts` / React view → vanilla ES modules.
-- Session layout: guide panel is a host div (not canvas-2d).
-- `tests/test_motion.py` covers motion maths.
-- Cache `?v=29` / `nura15`.
+Analysed and kept folder `rehab-ai-avatar-and-pain-check/` (avatar + pain check package).
+
+### Exercises wired to FollowAvatar
+Catalog in `edge/exercises/library.py` now includes `avatar_demo` for every entry:
+- shoulder_abduction → abduction
+- shoulder_flexion → flexion
+- assisted_flexion / wand_flexion → wand_flexion
+- wall_climb → wall_walk
+- pendulum → pendulum
+- external_rotation → er
+- wand_er → wand_er
+
+UI: exercise picker on patient + consumer dashboard; live session mounts the matching 3D demo + target.
+
+### Pain check
+Ported emoji 0–10 pain UI (`web/pain_scale.js`) into session debrief (replaces number chips).
 
 ## Verification
-- `python -m unittest tests.test_motion tests.test_consumer -v`
-- `node --check web/motion.js web/follow_avatar.js web/guide_follow.js`
+- `python -m unittest tests.test_pain_scale tests.test_motion tests.test_consumer -v`
+- Cache `?v=31` / `nura17`
 
 ## Next
-Redeploy Railway after push so production loads FollowAvatar.
+Redeploy Railway; rebuild APK when needed.

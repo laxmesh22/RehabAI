@@ -1,0 +1,110 @@
+/*
+  PainSlider — rehab.ai design language.
+  Assumes the shared design-system stylesheet already defines the tokens used below
+  (--bg, --ink, --ink-2, --teal, --gold, --coral, --card, --rule, --body). This file does not
+  redeclare them, so it stays a single source of truth with the rest of the app.
+
+  Colour: each button is tinted by tierForPain() -- teal (0-3, low), gold (4-6, moderate), or
+  coral (7-10, high) -- the same irritability-tier thresholds the rules engine already uses. That
+  is the one place this control deliberately uses coral outside a functional alert, and it is
+  standing in for a clinical threshold, not decorating a number. The one real "alert" text
+  (.pain-slider__flag) still gets coral on its own terms, same as elsewhere in the app.
+*/
+
+.pain-slider {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 460px;
+  margin-inline: auto;
+  padding: 20px 18px 18px;
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: 16px;
+  font-family: var(--body);
+  color: var(--ink);
+  text-align: center;
+}
+
+.pain-slider__question {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.pain-slider__row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.pain-slider__btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: 2px solid var(--rule);
+  background: var(--card);
+  cursor: pointer;
+  font-family: var(--body);
+  transition: transform 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+.pain-slider__btn:hover { transform: translateY(-1px); }
+.pain-slider__btn:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+.pain-slider__emoji { font-size: 1.3rem; line-height: 1; }
+.pain-slider__num { font-size: 0.65rem; color: var(--ink-2); line-height: 1; }
+
+/* Unselected: a quiet tint hinting at the tier. Selected: the full tier colour, so the one
+   you picked is the one that reads as "on". */
+.pain-slider__btn[data-tier="low"] { background: color-mix(in srgb, var(--teal) 10%, var(--card)); }
+.pain-slider__btn[data-tier="moderate"] { background: color-mix(in srgb, var(--gold) 14%, var(--card)); }
+.pain-slider__btn[data-tier="high"] { background: color-mix(in srgb, var(--coral) 14%, var(--card)); }
+
+.pain-slider__btn.is-selected {
+  border-width: 3px;
+  transform: scale(1.12);
+}
+.pain-slider__btn.is-selected[data-tier="low"] { border-color: var(--teal); background: color-mix(in srgb, var(--teal) 24%, var(--card)); }
+.pain-slider__btn.is-selected[data-tier="moderate"] { border-color: var(--gold); background: color-mix(in srgb, var(--gold) 30%, var(--card)); }
+.pain-slider__btn.is-selected[data-tier="high"] { border-color: var(--coral); background: color-mix(in srgb, var(--coral) 30%, var(--card)); }
+
+.pain-slider__scale-ends {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--ink-2);
+}
+
+.pain-slider__value-label {
+  margin: 0;
+  font-size: 0.95rem;
+  color: var(--ink-2);
+}
+
+.pain-slider__flag {
+  margin: 4px 0 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(193, 82, 76, 0.12);
+  color: var(--coral);
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+@media (max-width: 420px) {
+  .pain-slider__btn { width: 44px; height: 44px; }
+  .pain-slider__emoji { font-size: 1.1rem; }
+}
