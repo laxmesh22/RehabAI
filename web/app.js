@@ -788,12 +788,7 @@ async function renderLive(sessionId, opts = {}) {
     header: `<p class="eyebrow">${session.source === 'live' ? 'Live RealSense + arm IMU' : session.source === 'phone' ? 'Live phone RGB · 2D pose' : 'Simulation · synthetic RGB-D + arm IMU'}</p>
       <h1>${session.exercise_id.replaceAll('_',' ')}</h1>`,
     body: `<div class="checks" id="calib"></div>
-      <div class="grid-live">
-        <div class="view">
-          <div class="view-label" id="view-label">${session.source === 'live' ? 'LIVE RGB-D · POSE OVERLAY' : session.source === 'phone' ? 'PHONE RGB · 2D POSE · NO DEPTH · UNVALIDATED' : 'SYNTHETIC RGB-D + ARM IMU · NOT LIVE SENSORS'}</div>
-          ${session.source === 'phone' ? '<video id="phone-camera" class="phone-mirror" playsinline muted></video>' : ''}
-          <canvas id="skel" width="640" height="480" class="${session.source === 'phone' ? 'phone-overlay phone-mirror' : ''}"></canvas>
-        </div>
+      <div class="grid-live guide-first">
         <div class="view guide">
           <div class="view-label">3D GUIDE · FOLLOW ALONG · NOT A DIAGNOSIS</div>
           <div id="guide3d" class="guide-host" data-exercise="${session.exercise_id}" data-target="${session.target}" data-side="${session.side || 'right'}"></div>
@@ -831,6 +826,7 @@ async function renderLive(sessionId, opts = {}) {
             <p class="feedback" id="fb">Stand in the marked area. Hold a relaxed posture.</p>
             <p id="sub" class="empty"></p>
             ${session.source === 'phone' ? `<div class="phone-capture-controls">
+              <video id="phone-camera" class="phone-preview phone-mirror" playsinline muted></video>
               <button class="primary" id="phone-camera-start" type="button">Enable phone camera</button>
               <p class="intake-status" id="phone-camera-status">Camera frames stay transient. Only landmarks and measurements are stored.</p>
             </div>` : ''}
@@ -861,7 +857,7 @@ async function renderLive(sessionId, opts = {}) {
         </div>
       </div>`
   }, '#/patients');
-  liveCanvas = $('#skel');
+  liveCanvas = null;
   mountGuide('#guide3d', {
     exercise: session.exercise_id,
     target: session.target,
@@ -1442,12 +1438,11 @@ async function renderRecording(id) {
   const row = await api('recordings/' + id);
   shell({ header: `<h1>Recording replay</h1>`, body: `<div class="panel">
     <p>${row.seeded ? 'Seeded demo pointer — no binary video is stored.' : 'Telemetry replay from consented session. Video binaries are stored on disk, not in the database.'}</p>
-    <div class="grid-live">
-      <div class="view"><canvas id="skel" width="640" height="480"></canvas></div>
+    <div class="grid-live guide-first">
       <div class="view guide"><div id="guide3d" class="guide-host" data-exercise="shoulder_abduction" data-target="90" data-side="right"></div></div>
     </div>
     <p id="fb" class="feedback"></p></div>` }, '#/recordings');
-  liveCanvas = $('#skel');
+  liveCanvas = null;
   mountGuide('#guide3d', { exercise: 'shoulder_abduction', target: 90, side: 'right' });
   const samples = row.samples || [];
   let i = 0;

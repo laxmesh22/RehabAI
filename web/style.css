@@ -329,6 +329,11 @@ td { padding: 12px 8px; border-bottom: 1px solid #eef3ee; }
 .view-label { position: absolute; top: 14px; left: 16px; color: #d7e8d4; font-size: 11px; letter-spacing: .14em; z-index: 2; }
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .grid-live { display: grid; grid-template-columns: 1.05fr 1.05fr .9fr; gap: 14px; min-height: 540px; }
+.grid-live.guide-first { grid-template-columns: 1.35fr .95fr; }
+.phone-preview {
+  width: 100%; max-height: 180px; border-radius: 16px; display: block; object-fit: cover;
+  background: #10241f; margin-bottom: 10px;
+}
 .chat { display: flex; flex-direction: column; gap: 10px; max-height: 480px; overflow: auto; }
 .bubble { padding: 12px 14px; border-radius: 16px; background: var(--bg); }
 .bubble.me { background: var(--ink); color: #fff; }
