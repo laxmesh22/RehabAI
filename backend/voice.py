@@ -109,14 +109,15 @@ async def transcribe_audio(
         engines = ['elevenlabs-scribe'] + [name for name in engines if name != 'elevenlabs-scribe']
     elif prefer == 'sarvam' and 'sarvam-saaras' in engines:
         engines = ['sarvam-saaras'] + [name for name in engines if name != 'sarvam-saaras']
+    stt_timeout = min(6.0 if fast else 10.0, VOICE_TIMEOUT_S)
     if fast:
         engines = engines[:1]
     for engine in engines:
         try:
             if engine == 'sarvam-saaras':
-                row = await _sarvam_stt(data, filename, content_type, language)
+                row = await _sarvam_stt(data, filename, content_type, language, timeout_s=stt_timeout)
             else:
-                row = await _elevenlabs_stt(data, filename, content_type, language)
+                row = await _elevenlabs_stt(data, filename, content_type, language, timeout_s=stt_timeout)
             if (row.get('transcript') or '').strip():
                 return row
         except (httpx.HTTPError, ValueError, TypeError, VoiceProviderError, OSError):
@@ -154,8 +155,8 @@ async def synthesize_speech(text: str, language: str = 'en-IN') -> tuple[bytes, 
     raise VoiceProviderError(last_error)
 
 
-async def _sarvam_stt(data, filename, content_type, language):
-    async with httpx.AsyncClient(timeout=min(10.0, VOICE_TIMEOUT_S)) as client:
+async def _sarvam_stt(data, filename, content_type, language, *, timeout_s: float | None = None):
+    async with httpx.AsyncClient(timeout=timeout_s or min(10.0, VOICE_TIMEOUT_S)) as client:
         response = await client.post(
             f'{SARVAM_BASE_URL}/speech-to-text',
             headers={'api-subscription-key': SARVAM_API_KEY},
@@ -178,8 +179,8 @@ async def _sarvam_stt(data, filename, content_type, language):
     }
 
 
-async def _elevenlabs_stt(data, filename, content_type, language):
-    async with httpx.AsyncClient(timeout=min(10.0, VOICE_TIMEOUT_S)) as client:
+async def _elevenlabs_stt(data, filename, content_type, language, *, timeout_s: float | None = None):
+    async with httpx.AsyncClient(timeout=timeout_s or min(10.0, VOICE_TIMEOUT_S)) as client:
         response = await client.post(
             f'{ELEVENLABS_BASE_URL}/v1/speech-to-text',
             headers={'xi-api-key': ELEVENLABS_API_KEY},

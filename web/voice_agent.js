@@ -123,8 +123,10 @@
 
   async function askServer(wav) {
     const body = new FormData();
+    const scene = sessionContext().scene;
     body.append('language', language());
-    body.append('speak', '1');
+    // Consumer: skip cloud TTS — browser speech is much faster; keep cloud for studio.
+    body.append('speak', scene === 'consumer' ? '0' : '1');
     body.append('context', JSON.stringify(sessionContext()));
     const pid = patientId();
     if (pid) body.append('patient_id', pid);
@@ -216,7 +218,8 @@
     try {
       await intake.unlockAudio?.();
       const scene = sessionContext().scene;
-      if (scene === 'consumer') {
+      const consumer = scene === 'consumer';
+      if (consumer) {
         let first;
         try {
           first = await askServer(null);
@@ -228,8 +231,8 @@
         syncConsumerFromReply(first);
         if (first.spoken) await playReply(first);
         if (gen !== callGen || !talking) return;
-        // Let speaker audio decay so STT does not hear Subh / browser TTS.
-        await sleep(450);
+        // Short decay so STT does not hear browser TTS (was 450ms).
+        await sleep(180);
         if (first.action === 'open_home') {
           applyStudioAction('open_home');
           return;
@@ -251,9 +254,10 @@
         let wav;
         try {
           wav = await intake.listenWav(language(), {
-            timeoutMs: 6000,
-            silenceMs: 550,
-            minSpeechMs: 320,
+            // Consumer: end utterance sooner so the turn feels snappy.
+            timeoutMs: consumer ? 5000 : 6000,
+            silenceMs: consumer ? 380 : 550,
+            minSpeechMs: consumer ? 260 : 320,
             keepMic: true,
             onStatus: setHint,
           });
@@ -261,7 +265,7 @@
           hardErrors += 1;
           setHint(err.message || 'Mic issue. Trying again…');
           if (hardErrors >= 3) break;
-          await sleep(400);
+          await sleep(consumer ? 220 : 400);
           continue;
         }
         if (!talking || gen !== callGen) break;
@@ -275,7 +279,7 @@
                 { keepMic: true },
               );
             } catch { /* ignore */ }
-            await sleep(300);
+            await sleep(consumer ? 160 : 300);
             emptyTurns = 0;
           }
           continue;
@@ -290,7 +294,7 @@
           hardErrors += 1;
           setHint(err.message || 'Server voice failed. Trying again…');
           if (hardErrors >= 3) break;
-          await sleep(500);
+          await sleep(consumer ? 280 : 500);
           continue;
         }
         if (!talking || gen !== callGen) break;
@@ -306,7 +310,7 @@
         }
         if (data.spoken) await playReply(data);
         if (!talking || gen !== callGen) break;
-        await sleep(400);
+        await sleep(consumer ? 160 : 400);
         if (shouldEndCall(data)) {
           talking = false;
           break;

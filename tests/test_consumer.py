@@ -62,25 +62,21 @@ class ConsumerVoiceTests(unittest.IsolatedAsyncioTestCase):
         from agent import consumer_voice
         with patch.object(consumer_voice, 'ANTHROPIC_API_KEY', ''):
             row = await consumer_voice.consumer_reply('', patient_id='P-test', language='en-IN')
-        self.assertEqual(row['engine'], 'consumer-fallback')
+        self.assertEqual(row['engine'], 'consumer-fast')
         self.assertIn('Pain at rest', row['spoken'])
         self.assertEqual(row['intake_field'], 'pain_rest')
         self.assertIsNone(row['parsed'])
         self.assertNotIn('diagnosis', row['spoken'].lower())
 
-    async def test_consumer_confirms_and_advances(self):
+    async def test_consumer_saves_number_and_advances_in_one_turn(self):
         from agent import consumer_voice
         with patch.object(consumer_voice, 'ANTHROPIC_API_KEY', ''):
-            first = await consumer_voice.consumer_reply('four', patient_id='P-test', language='en-IN')
-            self.assertTrue(first['awaiting_confirm'])
-            self.assertEqual(first['pending_value'], 4)
-            second = await consumer_voice.consumer_reply(
-                'yes', patient_id='P-test', language='en-IN',
-                awaiting_confirm=True, pending_value=4, intake_field='pain_rest',
-            )
-        self.assertEqual(second['intake']['pain_rest'], 4)
-        self.assertEqual(second['intake_field'], 'pain_movement')
-        self.assertTrue('Saved' in second['spoken'] or 'Pain while moving' in second['spoken'])
+            row = await consumer_voice.consumer_reply('four', patient_id='P-test', language='en-IN')
+        self.assertFalse(row.get('awaiting_confirm'))
+        self.assertEqual(row['intake']['pain_rest'], 4)
+        self.assertEqual(row['intake_field'], 'pain_movement')
+        self.assertIn('4', row['spoken'])
+        self.assertTrue('moving' in row['spoken'].lower() or 'Pain while' in row['spoken'])
 
     async def test_consumer_completes_to_report_phase(self):
         from agent import consumer_voice
@@ -174,7 +170,8 @@ class ConsumerApiTests(unittest.TestCase):
         self.assertTrue(data.get('spoken'))
         self.assertIn(data.get('engine'), {
             'consumer-fallback', 'consumer-autonomous', 'consumer-prompt', 'consumer-report',
-            'consumer-ready', 'consumer-complete',
+            'consumer-ready', 'consumer-complete', 'consumer-fast', 'consumer-next', 'consumer-reask',
+            'consumer-intake-done',
         })
         self.assertEqual(data['tts_engine'], 'browser-speech')
         # Numbers must never be invented into spoken on empty open turn without patient words.
