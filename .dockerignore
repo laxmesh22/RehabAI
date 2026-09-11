@@ -11,12 +11,12 @@ __pycache__
 .mypy_cache
 storage
 data
+tmp
+outputs
+releases
 *.db
-mobile/node_modules
-mobile/android/.gradle
-mobile/android/app/build
-mobile/android/build
-mobile/www
+*.zip
+mobile
 *.apk
 *.aab
 .venv
@@ -29,3 +29,6 @@ docs
 !README.md
 .cursor
 agent-transcripts
+web/models
+ml
+SHOULDER TRACKER-20260911T185059Z-1-001.zip
