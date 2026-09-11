@@ -7,11 +7,16 @@ def evaluate_calibration(snapshot, min_confidence=.65, min_distance=.8, max_dist
     points = snapshot.get('points') or {}
     people = snapshot.get('people', 0)
     simulation = bool(snapshot.get('simulation'))
+    capture_profile = snapshot.get('capture_profile') or ('simulation' if simulation else 'realsense_rgbd')
+    depth_required = bool(snapshot.get('depth_required', not simulation))
+    framing_ok = snapshot.get('framing_ok')
     pose_ok = people == 1 and all(name in points and points[name].confidence >= min_confidence for name in required)
     distance = snapshot.get('distance')
-    if distance is None and 'left_shoulder' in points:
+    if distance is None and capture_profile != 'phone_rgb_2d' and 'left_shoulder' in points:
         distance = abs(points['left_shoulder'].xyz[2])
-    distance_ok = distance is not None and min_distance <= distance <= max_distance
+    distance_ok = bool(framing_ok) if capture_profile == 'phone_rgb_2d' else (
+        distance is not None and min_distance <= distance <= max_distance
+    )
     if simulation:
         camera_ok, depth_ok = False, False
     else:
@@ -22,12 +27,15 @@ def evaluate_calibration(snapshot, min_confidence=.65, min_distance=.8, max_dist
     imu_ok = bool(imu and imu.get('ok'))
     imu_simulation = bool(imu and imu.get('simulation'))
     imu_required = bool(snapshot.get('imu_required'))
-    ready = pose_ok and distance_ok and (simulation or (camera_ok and depth_ok))
+    ready = pose_ok and distance_ok and (simulation or (camera_ok and (depth_ok or not depth_required)))
     if imu_required and not simulation:
         ready = ready and imu_ok
     return {
         'camera_ok': camera_ok,
         'depth_ok': depth_ok,
+        'depth_required': depth_required,
+        'capture_profile': capture_profile,
+        'framing_ok': None if framing_ok is None else bool(framing_ok),
         'pose_ok': pose_ok,
         'distance_ok': bool(distance_ok),
         'imu_ok': imu_ok,
@@ -37,12 +45,12 @@ def evaluate_calibration(snapshot, min_confidence=.65, min_distance=.8, max_dist
         'people': people,
         'simulation': simulation,
         'ready': ready,
-        'message': _message(simulation, camera_ok, depth_ok, pose_ok, distance_ok, people,
+        'message': _message(simulation, camera_ok, depth_ok, depth_required, capture_profile, pose_ok, distance_ok, people,
                             imu_ok, imu_enabled, imu_required, imu_simulation),
     }
 
 
-def _message(simulation, camera_ok, depth_ok, pose_ok, distance_ok, people,
+def _message(simulation, camera_ok, depth_ok, depth_required, capture_profile, pose_ok, distance_ok, people,
              imu_ok=False, imu_enabled=False, imu_required=False, imu_simulation=False):
     if simulation:
         if pose_ok and distance_ok:
@@ -52,7 +60,7 @@ def _message(simulation, camera_ok, depth_ok, pose_ok, distance_ok, people,
         return 'Simulation is not yet showing a full upper body.'
     if not camera_ok:
         return 'Camera not ready.'
-    if not depth_ok:
+    if depth_required and not depth_ok:
         return 'Depth is unavailable. Assessment cannot start.'
     if imu_required and not imu_ok:
         return 'Arm IMU is not streaming. Dual-sensor live mode cannot start.'
@@ -61,7 +69,11 @@ def _message(simulation, camera_ok, depth_ok, pose_ok, distance_ok, people,
     if not pose_ok:
         return 'Upper-body landmarks are incomplete or low-confidence.'
     if not distance_ok:
+        if capture_profile == 'phone_rgb_2d':
+            return 'Move the phone until shoulders, elbows and hips are fully visible.'
         return 'Stand on the marked distance marker and face the camera.'
+    if capture_profile == 'phone_rgb_2d':
+        return 'Phone RGB tracking is ready. Angles are 2D-derived, have no depth, and are unvalidated.'
     if imu_enabled and imu_ok and not imu_simulation:
         return 'Tracking quality is acceptable. RealSense and arm IMU are live and unvalidated.'
     return 'Tracking quality is acceptable. You may start the assessment.'

@@ -132,32 +132,77 @@ def get_approved_exercise_library(_db=None):
     return approved_library()
 
 
+def _delta_from_values(values, extras=None):
+    if not values:
+        return None
+    first, last = values[0], values[-1]
+    row = {'baseline': first, 'current': last, 'change': round(last - first, 1), 'n': len(values)}
+    if extras:
+        row.update(extras)
+    return row
+
+
 def calculate_patient_progress(db, patient_id):
     history = get_assessment_history(db, patient_id)
+    rom = get_rom_history(db, patient_id)
+    pain_rows = get_pain_history(db, patient_id)
+    sessions = get_session_history(db, patient_id)
     valid = [row for row in history if row['flexion_max'] is not None or row['abduction_max'] is not None]
-    if not valid:
-        return {'error': 'no_valid_assessments', 'patient_id': patient_id}
-    baseline, current = valid[0], valid[-1]
-
-    def delta(field):
-        a, b = baseline.get(field), current.get(field)
-        if a is None or b is None:
-            return None
-        return {'baseline': a, 'current': b, 'change': round(b - a, 1)}
-
-    pain = delta('pain_movement')
+    abd_rom = [row for row in rom if row['movement'] == 'abduction']
+    flex_rom = [row for row in rom if row['movement'] == 'flexion']
+    pain_move = [row['movement'] for row in pain_rows if row.get('movement') is not None]
+    if not pain_move:
+        pain_move = [row['pain_after'] for row in sessions if row.get('pain_after') is not None]
+    pain_rest = [row['rest'] for row in pain_rows if row.get('rest') is not None]
+    abd = _delta_from_values([row['value'] for row in abd_rom])
+    if abd is None:
+        abd = _delta_from_values([row['abduction_max'] for row in valid if row.get('abduction_max') is not None])
+    flex = _delta_from_values([row['value'] for row in flex_rom])
+    if flex is None:
+        flex = _delta_from_values([row['flexion_max'] for row in valid if row.get('flexion_max') is not None])
+    pain = _delta_from_values(pain_move)
+    rest = _delta_from_values(pain_rest)
+    torso = _delta_from_values([row['torso_compensation'] for row in valid if row.get('torso_compensation') is not None])
+    if not abd and not flex and not pain:
+        return {
+            'error': 'no_valid_measurements',
+            'patient_id': patient_id,
+            'abduction': None,
+            'flexion': None,
+            'pain_movement': None,
+            'pain_rest': None,
+            'torso_compensation': None,
+            'demo_records_present': any(row.get('is_demo') for row in history + sessions),
+            'recovery_percentage': None,
+            'recovery_percentage_note': 'No recovery percentage is defined. Changes are reported in native units only.',
+        }
+    latest_rom = (abd_rom or flex_rom or [None])[-1]
+    baseline = valid[0] if valid else None
+    current = valid[-1] if valid else None
+    demo = any(row.get('is_demo') for row in history + sessions)
+    sources = {
+        'baseline': (abd_rom[0]['source'] if abd_rom else None) or (None if baseline is None else baseline.get('source')),
+        'current': (latest_rom or {}).get('source') if isinstance(latest_rom, dict) else (None if current is None else current.get('source')),
+    }
     return {
         'patient_id': patient_id,
-        'baseline_assessment_id': baseline['id'],
-        'current_assessment_id': current['id'],
-        'baseline_at': baseline['created_at'],
-        'current_at': current['created_at'],
-        'abduction': delta('abduction_max'),
-        'flexion': delta('flexion_max'),
+        'baseline_assessment_id': None if baseline is None else baseline['id'],
+        'current_assessment_id': None if current is None else current['id'],
+        'baseline_at': (abd_rom[0]['recorded_at'] if abd_rom else None) or (None if baseline is None else baseline['created_at']),
+        'current_at': (abd_rom[-1]['recorded_at'] if abd_rom else None) or (None if current is None else current['created_at']),
+        'abduction': abd,
+        'flexion': flex,
         'pain_movement': pain,
-        'torso_compensation': delta('torso_compensation'),
-        'sources': {'baseline': baseline['source'], 'current': current['source']},
-        'demo_records_present': baseline['is_demo'] or current['is_demo'],
+        'pain_rest': rest,
+        'torso_compensation': torso,
+        'sources': sources,
+        'latest_source': sources.get('current'),
+        'point_count': {
+            'abduction': 0 if abd is None else abd.get('n'),
+            'flexion': 0 if flex is None else flex.get('n'),
+            'pain_movement': 0 if pain is None else pain.get('n'),
+        },
+        'demo_records_present': demo,
         'recovery_percentage': None,
         'recovery_percentage_note': 'No recovery percentage is defined. Changes are reported in native units only.',
     }
