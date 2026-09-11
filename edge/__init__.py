@@ -1,0 +1,1 @@
+"""RehabAI edge measurement application."""

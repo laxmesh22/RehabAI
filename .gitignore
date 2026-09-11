@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+data/
+tmp/
+.env
+.sites-runtime/
+training-runs/
+*.pt
+*.engine
+*.onnx
+frontend/node_modules/
+frontend/.next/
+storage/patients/*/
+!storage/patients/.gitkeep
+*.db

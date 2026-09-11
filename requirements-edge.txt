@@ -1,0 +1,5 @@
+numpy>=1.26
+pyrealsense2
+mediapipe
+ultralytics
+opencv-python-headless

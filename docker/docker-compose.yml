@@ -1,0 +1,30 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: rehabai
+      POSTGRES_USER: rehabai
+      POSTGRES_PASSWORD: rehabai
+    ports:
+      - "5432:5432"
+    volumes:
+      - rehabai-pg:/var/lib/postgresql/data
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg2://rehabai:rehabai@db:5432/rehabai
+      REHABAI_SOURCE: simulation
+      REHABAI_HOST: 0.0.0.0
+      JWT_SECRET: change-me-on-the-hospital-lan
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+    volumes:
+      - ../storage:/app/storage
+      - ../data:/app/data
+
+volumes:
+  rehabai-pg:

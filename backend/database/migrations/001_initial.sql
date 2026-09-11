@@ -1,0 +1,6 @@
+-- Hackathon schema is created by SQLAlchemy metadata on startup.
+-- Switch DATABASE_URL to PostgreSQL for the hospital LAN compose stack.
+-- Tables: users, hospitals, patients, assessments, rom_measurements, pain_scores,
+-- sessions, session_metrics, exercises, rehab_plans, exercise_results,
+-- compensation_events, recordings, clinical_notes, ai_reports, alerts, consents,
+-- audit_logs, appointments.
