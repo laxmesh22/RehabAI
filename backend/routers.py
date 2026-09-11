@@ -39,7 +39,11 @@ from backend.voice import (
 )
 from agent.live_voice import live_reply, sanitize_context
 from agent.consumer_voice import consumer_reply, greeting_prompt
-from backend.memory import load_memory, merge_session_into_memory, save_memory
+from backend.memory import (
+    append_report, load_memory, merge_session_into_memory, report_phase_complete,
+    save_memory, skip_report_phase,
+)
+from backend.ocr import run_report_ocr
 from agent.retrieval import patient_memory_for_agent
 from edge.phone_capture import phone_pose_available
 from backend.exports import build_patient_record, patient_record_json, patient_record_xlsx
@@ -668,6 +672,7 @@ async def voice_agent(
         'pending_value': talk.get('pending_value'),
         'intake': talk.get('intake'),
         'memory': talk.get('memory'),
+        'phase': talk.get('phase'),
     }
 
 
@@ -778,7 +783,10 @@ def consumer_me(user: User = Depends(current_user), db: Session = Depends(get_db
     progress = calculate_patient_progress(db, patient.id)
     rom = get_rom_history(db, patient.id) or []
     pain = get_pain_history(db, patient.id) or []
+    mem = load_memory(patient.id)
     memory = patient_memory_for_agent(db, patient.id)
+    intake_done = bool((mem.get('intake') or {}).get('confirmed'))
+    report_done = report_phase_complete(mem)
     return {
         'patient_id': patient.id,
         'is_demo': bool(patient.is_demo),
@@ -788,10 +796,72 @@ def consumer_me(user: User = Depends(current_user), db: Session = Depends(get_db
         'flexion_series': [r for r in rom if r.get('movement') == 'flexion'],
         'pain_series': pain,
         'memory': memory,
-        'intake_complete': bool((load_memory(patient.id).get('intake') or {}).get('confirmed')),
+        'intake_complete': intake_done,
+        'report_complete': report_done,
+        'phase': (
+            'dashboard' if intake_done and report_done else
+            'report' if intake_done else
+            'questionnaire'
+        ),
+        'display_name': (user.full_name or '').split(' ')[0] or 'there',
         'phone_pose_available': phone_pose_available(),
-        'greeting': greeting_prompt('en-IN', load_memory(patient.id)),
-        'disclaimer': 'This is not a diagnosis. Stored measurements only.',
+        'greeting': greeting_prompt('en-IN', mem),
+        'disclaimer': 'This is not a diagnosis. Voice answers and OCR printouts only.',
+    }
+
+
+@router.post('/consumer/report-ocr')
+async def consumer_report_ocr(
+    file: UploadFile = File(...),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    if user.role != 'PATIENT':
+        raise HTTPException(403, 'Only the signed-in patient can upload a report')
+    patient = db.scalars(select(Patient).where(Patient.user_id == user.id)).first()
+    if patient is None:
+        raise HTTPException(404, 'No patient record for this account')
+    data = await file.read()
+    if not data or len(data) > 8_000_000:
+        raise HTTPException(400, 'Report image must be under 8 MB')
+    result = await run_report_ocr(data, file.filename or 'report.jpg', file.content_type or 'image/jpeg')
+    # Persist structured OCR only — not the raw image binary in SQL.
+    report = {
+        'engine': result.get('engine'),
+        'metrics': result.get('metrics') or {},
+        'text_excerpt': (result.get('text') or '')[:500],
+        'filename': file.filename or 'report.jpg',
+        'disclaimer': result.get('disclaimer'),
+    }
+    mem = append_report(patient.id, report, phase='done')
+    return {
+        'ok': True,
+        'report': report,
+        'report_phase': mem.get('report_phase'),
+        'action': 'open_home',
+        'spoken': (
+            'Report scanned. Opening your personalized dashboard. This is not a diagnosis.'
+            if (report.get('metrics') or {}).get('abduction_deg') is not None
+            or (report.get('metrics') or {}).get('pain_score') is not None
+            else 'Report saved. Opening your dashboard. Printed numbers were limited or unclear.'
+        ),
+        'memory': patient_memory_for_agent(db, patient.id),
+    }
+
+
+@router.post('/consumer/report-skip')
+def consumer_report_skip(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if user.role != 'PATIENT':
+        raise HTTPException(403, 'Only the signed-in patient can skip report upload')
+    patient = db.scalars(select(Patient).where(Patient.user_id == user.id)).first()
+    if patient is None:
+        raise HTTPException(404, 'No patient record for this account')
+    mem = skip_report_phase(patient.id)
+    return {
+        'ok': True,
+        'report_phase': mem.get('report_phase'),
+        'action': 'open_home',
+        'spoken': 'Skipping report upload. Opening your dashboard. This is not a diagnosis.',
     }
 
 

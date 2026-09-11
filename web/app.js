@@ -260,25 +260,176 @@ function shell(content, active) {
 
 function consumerShell(content, active) {
   const homeOn = active === '#/app/home';
-  const talkOn = !homeOn;
-  app.innerHTML = `<div class="app-shell consumer-shell">
-    <div class="stage consumer-stage">
-      <div class="chrome consumer-chrome">
-        <div class="brand">${brandMark(true)}<strong>RehabAI</strong></div>
-        <div class="chrome-actions">
-          <a class="${talkOn ? 'active-pill' : 'ghost'}" href="#/app">Talk</a>
-          <a class="${homeOn ? 'active-pill' : 'ghost'}" href="#/app/home">Home</a>
-        </div>
-      </div>
-      ${content.header ? `<div class="page-head">${content.header}</div>` : ''}
-      ${content.body}
-    </div>
+  const step = content.step || (homeOn ? 2 : 1);
+  app.innerHTML = `<div class="consumer-app">
+    <header class="consumer-top">
+      <div class="brand">${brandMark(true)}<strong>RehabAI</strong></div>
+      <nav class="consumer-steps" aria-label="Flow">
+        <a class="${step === 1 ? 'on' : ''}" href="#/app"><span>1</span> Agent</a>
+        <i></i>
+        <a class="${step === 2 ? 'on' : ''}" href="#/app/home"><span>2</span> Dashboard</a>
+      </nav>
+    </header>
+    <main class="consumer-main">${content.body || ''}</main>
   </div>
   <button type="button" class="voice-dock" id="voice-dock" aria-label="Talk to RehabAI">
     <span class="voice-dock-mic" aria-hidden="true"></span>
-    <span class="voice-dock-copy"><strong id="voice-dock-title">Talk</strong><em id="voice-dock-hint">Tap to start · talks until you end</em></span>
+    <span class="voice-dock-copy"><strong id="voice-dock-title">Talk</strong><em id="voice-dock-hint">One agent · records your answers</em></span>
   </button>`;
   window.RehabVoiceAgent?.bindDock?.();
+}
+
+function consumerProgress(intake, fieldId) {
+  const fields = ['pain_rest', 'pain_movement', 'difficulty_dressing', 'difficulty_grooming', 'difficulty_overhead', 'difficulty_behind_back'];
+  const done = fields.filter(id => intake && (intake.fields || {})[id]).length;
+  const active = Math.max(0, fields.indexOf(fieldId));
+  return `<div class="agent-progress" aria-label="${done} of 6 questions saved">
+    ${fields.map((id, i) => `<em class="${(intake && (intake.fields || {})[id]) ? 'done' : (i === active ? 'now' : '')}"></em>`).join('')}
+    <span>${done}/6</span>
+  </div>`;
+}
+
+async function renderConsumerTalk() {
+  const me = await api('consumer/me');
+  state.consumerPatientId = me.patient_id;
+  if (me.intake_complete && me.report_complete) {
+    location.hash = '#/app/home';
+    return renderConsumerHome();
+  }
+  let language = window.RehabVoiceLang || 'en-IN';
+  window.RehabVoiceLang = language;
+  window.RehabVoiceContext = {
+    scene: 'consumer',
+    patient_id: me.patient_id,
+    intake_field: null,
+    awaiting_confirm: false,
+    pending_value: null,
+  };
+  const phase = me.phase || (me.intake_complete ? 'report' : 'questionnaire');
+  const scores = (me.memory && me.memory.intake_scores) || {};
+  consumerShell({
+    step: 1,
+    body: `<section class="agent-slide">
+      <p class="eyebrow">${me.is_demo ? 'Demo patient · not clinical validation' : 'Patient agent'}</p>
+      <h1>RehabAI</h1>
+      <p class="lede">One voice agent records your shoulder questionnaire, then scans a report with OCR. Next slide is your personal dashboard. This is not a diagnosis.</p>
+      <div class="agent-stage">
+        <div class="agent-prompt-card">
+          <div class="row lang-row">
+            <button class="ghost" id="lang-en" type="button">English</button>
+            <button class="ghost" id="lang-hi" type="button">हिन्दी</button>
+          </div>
+          ${consumerProgress({ fields: Object.fromEntries(Object.keys(scores).map(k => [k, true])) }, null)}
+          <h2 id="consumer-prompt">${me.greeting || 'Tap Talk to begin.'}</h2>
+          <p class="intake-status" id="consumer-status">${me.disclaimer}</p>
+        </div>
+        <div class="agent-report ${phase === 'report' ? 'hot' : ''}" id="report-panel">
+          <h3>Report OCR</h3>
+          <p>After the six questions, photograph a clinic printout. OCR keeps only clearly printed numbers.</p>
+          <label class="report-upload">
+            <input type="file" id="report-file" accept="image/*" capture="environment" hidden>
+            <span>Upload report photo</span>
+          </label>
+          <button class="ghost" id="report-skip" type="button">Skip report</button>
+          <p class="intake-status" id="report-status"></p>
+        </div>
+      </div>
+    </section>`,
+  }, '#/app');
+  const setLang = next => {
+    if (language === next) return;
+    language = next;
+    window.RehabVoiceLang = language;
+    if (window.RehabVoiceAgent?.isTalking?.()) window.RehabVoiceAgent.restart?.();
+  };
+  $('#lang-en')?.addEventListener('click', () => setLang('en-IN'));
+  $('#lang-hi')?.addEventListener('click', () => setLang('hi-IN'));
+  $('#report-skip')?.addEventListener('click', async () => {
+    try {
+      $('#report-status').textContent = 'Skipping…';
+      const res = await api('consumer/report-skip', {});
+      $('#report-status').textContent = res.spoken || 'Opening dashboard';
+      goto('#/app/home');
+    } catch (e) {
+      $('#report-status').textContent = e.message;
+    }
+  });
+  $('#report-file')?.addEventListener('change', async ev => {
+    const file = ev.target.files && ev.target.files[0];
+    if (!file) return;
+    $('#report-status').textContent = 'Scanning with OCR…';
+    try {
+      const body = new FormData();
+      body.append('file', file, file.name || 'report.jpg');
+      const headers = {};
+      if (state.token) headers.Authorization = 'Bearer ' + state.token;
+      const res = await fetch('/api/consumer/report-ocr', { method: 'POST', headers, body });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || 'OCR failed');
+      const m = (data.report && data.report.metrics) || {};
+      $('#report-status').textContent = data.spoken || (
+        `OCR ${data.report?.engine || ''}: abd ${m.abduction_deg ?? '—'}°, pain ${m.pain_score ?? '—'}`
+      );
+      if (data.spoken) {
+        try { await window.RehabIntake?.speak?.(data.spoken, language, { keepMic: true }); } catch {}
+      }
+      setTimeout(() => goto('#/app/home'), 600);
+    } catch (e) {
+      $('#report-status').textContent = e.message || 'OCR failed';
+    }
+  });
+  clearTimeout(window.__rehabAutoTalk);
+  window.__rehabAutoTalk = setTimeout(() => {
+    window.RehabVoiceAgent?.ensureTalking?.();
+  }, 350);
+}
+
+async function renderConsumerHome() {
+  window.RehabVoiceAgent?.endTalk?.();
+  const me = await api('consumer/me');
+  state.consumerPatientId = me.patient_id;
+  if (!me.intake_complete || !me.report_complete) {
+    location.hash = '#/app';
+    return renderConsumerTalk();
+  }
+  window.RehabVoiceContext = { scene: 'consumer', patient_id: me.patient_id };
+  const progress = me.progress && !me.progress.error ? me.progress : {};
+  const scores = (me.memory && me.memory.intake_scores) || {};
+  const abdSeries = (me.abduction_series || []).map(r => r.value).filter(v => v != null);
+  const painMove = (me.pain_series || []).map(r => r.movement).filter(v => v != null);
+  const abdNow = progress.abduction?.current ?? me.memory?.ocr_abduction ?? me.memory?.last_peak_abduction;
+  const painNow = progress.pain_movement?.current ?? scores.pain_movement ?? me.memory?.ocr_pain;
+  const demo = Boolean(me.is_demo);
+  const name = me.display_name || 'there';
+  consumerShell({
+    step: 2,
+    body: `<section class="dash-slide">
+      <p class="eyebrow">${demo ? 'Personalized · demo seed labelled' : 'Personalized for you'}</p>
+      <h1>${name}'s shoulder record</h1>
+      <p class="lede">Built from your voice questionnaire${me.memory?.ocr_engine ? ' and OCR report' : ''}. Stored values only — no recovery percentage, no diagnosis.</p>
+      <button class="primary start-giant" id="go">Start session</button>
+      <p class="empty">${me.phone_pose_available
+        ? 'Phone pose model is available on the server.'
+        : 'Session runs as labelled simulation until a pose model is configured.'}</p>
+      <div class="person-kpis">
+        <article><span>Abduction</span><strong>${abdNow == null ? '—' : Math.round(abdNow) + '°'}</strong><em>${demo ? 'Demo / stored' : 'Stored'}</em></article>
+        <article><span>Pain on move</span><strong>${painNow == null ? '—' : painNow + '/10'}</strong><em>Voice</em></article>
+        <article><span>Rest pain</span><strong>${scores.pain_rest == null ? '—' : scores.pain_rest + '/10'}</strong><em>Voice</em></article>
+        <article><span>OCR abd</span><strong>${me.memory?.ocr_abduction == null ? '—' : me.memory.ocr_abduction + '°'}</strong><em>${me.memory?.ocr_engine || 'No report'}</em></article>
+      </div>
+      <div class="person-charts">
+        <div class="panel">
+          <div class="panel-head"><div><h2>Abduction trend</h2><p class="sub">${seriesCaption(me.abduction_series || [])}</p></div></div>
+          ${chart(abdSeries, '#4d6848', true)}
+        </div>
+        <div class="panel mint">
+          <div class="panel-head"><div><h2>Pain on movement</h2><p class="sub">${painMove.length} stored scores</p></div></div>
+          ${barChart(painMove, '#4d6848')}
+        </div>
+      </div>
+    </section>`,
+  }, '#/app/home');
+  $('#go')?.addEventListener('click', () => startConsumerSession());
 }
 
 function renderLogin() {
@@ -1359,93 +1510,6 @@ async function ensureConsumerLogin() {
   state.token = res.token;
   state.user = res.user;
   localStorage.setItem('rehabai_token', res.token);
-}
-
-async function renderConsumerTalk() {
-  const me = await api('consumer/me');
-  state.consumerPatientId = me.patient_id;
-  let language = window.RehabVoiceLang || 'en-IN';
-  window.RehabVoiceLang = language;
-  window.RehabVoiceContext = {
-    scene: 'consumer',
-    patient_id: me.patient_id,
-    intake_field: null,
-    awaiting_confirm: false,
-    pending_value: null,
-  };
-  consumerShell({
-    header: `<p class="eyebrow">${me.is_demo ? 'DEMO PATIENT' : 'PATIENT APP'}</p>
-      <h1>${helloLine()}</h1>
-      <p>Talk with RehabAI. It asks pain and function questions, then opens your dashboard. This is not a diagnosis.</p>`,
-    body: `<section class="consumer-talk panel mint">
-      <div class="row">
-        <button class="ghost" id="lang-en" type="button">English</button>
-        <button class="ghost" id="lang-hi" type="button">हिन्दी</button>
-      </div>
-      <h2 id="consumer-prompt">${me.greeting || 'Tap Talk to begin.'}</h2>
-      <p class="intake-status" id="consumer-status">${me.disclaimer}</p>
-      <p class="empty">Answers are stored as patient-reported scores. Numbers are never invented.</p>
-      ${me.intake_complete ? '<button class="primary" id="go-home" type="button">Open my dashboard</button>' : ''}
-    </section>`,
-  }, '#/app');
-  const setLang = next => {
-    if (language === next) return;
-    language = next;
-    window.RehabVoiceLang = language;
-    // Changing language must restart Talk, not hang up via the Talk toggle.
-    if (window.RehabVoiceAgent?.isTalking?.()) window.RehabVoiceAgent.restart?.();
-  };
-  $('#lang-en')?.addEventListener('click', () => setLang('en-IN'));
-  $('#lang-hi')?.addEventListener('click', () => setLang('hi-IN'));
-  $('#go-home')?.addEventListener('click', () => goto('#/app/home'));
-  // Debounced ensure — double route() must not toggle Talk off.
-  clearTimeout(window.__rehabAutoTalk);
-  window.__rehabAutoTalk = setTimeout(() => {
-    window.RehabVoiceAgent?.ensureTalking?.();
-  }, 350);
-}
-
-async function renderConsumerHome() {
-  window.RehabVoiceAgent?.endTalk?.();
-  const me = await api('consumer/me');
-  state.consumerPatientId = me.patient_id;
-  window.RehabVoiceContext = { scene: 'consumer', patient_id: me.patient_id };
-  const progress = me.progress && !me.progress.error ? me.progress : {};
-  const abdSeries = (me.abduction_series || []).map(r => r.value).filter(v => v != null);
-  const painMove = (me.pain_series || []).map(r => r.movement).filter(v => v != null);
-  const abdNow = progress.abduction?.current;
-  const painNow = progress.pain_movement?.current;
-  const demo = Boolean(me.is_demo);
-  consumerShell({
-    header: `<p class="eyebrow">${demo ? 'DEMO · SYNTHETIC SEED ALLOWED' : 'YOUR RECORD'}</p>
-      <h1>Your dashboard</h1>
-      <p>Stored ROM and pain only. No recovery percentage. This is not a diagnosis.</p>`,
-    body: `<section class="patient-home">
-      ${me.phone_pose_available
-        ? '<button class="primary start-giant" id="go-phone">Start with phone camera</button><button class="ghost start-giant secondary-start" id="go-sim">Run labelled simulation demo</button>'
-        : '<button class="primary start-giant" id="go-sim">Run labelled simulation demo</button>'}
-      <p class="empty" style="margin-top:8px">${me.phone_pose_available
-        ? 'Phone pose is configured. It measures frontal movement from RGB in 2D; depth is not available.'
-        : 'Phone capture is disabled until a local model or hosted pose service is configured. Simulation remains explicitly labelled.'}</p>
-      <div class="kpi-row" style="margin-top:22px">
-        ${kpi('Abduction', abdNow == null ? '—' : Math.round(abdNow) + '°', demo ? 'Demo' : 'Stored')}
-        ${kpi('Pain', painNow == null ? '—' : painNow + '/10', 'Reported')}
-        ${kpi('Change', progress.abduction?.change == null ? '—' : fmtDelta(progress.abduction.change), 'Degrees')}
-      </div>
-      <div class="nura-mid" style="margin-top:18px">
-        <div class="panel">
-          <div class="panel-head"><div><h2>Abduction trend</h2><p class="sub">${seriesCaption(me.abduction_series || [])}</p></div></div>
-          ${chart(abdSeries, '#4d6848', true)}
-        </div>
-        <div class="panel mint">
-          <div class="panel-head"><div><h2>Pain on movement</h2><p class="sub">${painMove.length} stored scores</p></div></div>
-          ${barChart(painMove, '#4d6848')}
-        </div>
-      </div>
-    </section>`,
-  }, '#/app/home');
-  $('#go-phone')?.addEventListener('click', () => startConsumerSession('phone'));
-  $('#go-sim')?.addEventListener('click', () => startConsumerSession('simulation'));
 }
 
 async function startConsumerSession(capture) {

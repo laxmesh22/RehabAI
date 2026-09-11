@@ -17,6 +17,8 @@ def default_memory() -> dict[str, Any]:
     return {
         'version': 1,
         'intake': empty_intake(),
+        'report_phase': 'needed',  # needed | done | skipped
+        'reports': [],
         'last_peak_abduction': None,
         'last_peak_flexion': None,
         'last_pain_after': None,
@@ -43,6 +45,10 @@ def load_memory(patient_id: str) -> dict[str, Any]:
     base['intake'] = {**empty_intake(), **intake}
     summaries = row.get('session_summaries')
     base['session_summaries'] = summaries if isinstance(summaries, list) else []
+    reports = row.get('reports')
+    base['reports'] = reports if isinstance(reports, list) else []
+    phase = row.get('report_phase')
+    base['report_phase'] = phase if phase in ('needed', 'done', 'skipped') else 'needed'
     return base
 
 
@@ -56,10 +62,38 @@ def save_memory(patient_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         row['intake'] = empty_intake()
     if not isinstance(row.get('session_summaries'), list):
         row['session_summaries'] = []
+    if not isinstance(row.get('reports'), list):
+        row['reports'] = []
+    if row.get('report_phase') not in ('needed', 'done', 'skipped'):
+        row['report_phase'] = 'needed'
     from backend.database.models import utcnow
     row['updated_at'] = utcnow().isoformat() + 'Z'
     path.write_text(json.dumps(row, indent=2, ensure_ascii=False), encoding='utf-8')
     return row
+
+
+def append_report(patient_id: str, report: dict[str, Any], phase: str = 'done') -> dict[str, Any]:
+    row = load_memory(patient_id)
+    reports = list(row.get('reports') or [])
+    reports.append(report)
+    row['reports'] = reports[-10:]
+    row['report_phase'] = phase if phase in ('needed', 'done', 'skipped') else 'done'
+    metrics = (report or {}).get('metrics') or {}
+    if metrics.get('abduction_deg') is not None:
+        row['last_peak_abduction'] = metrics['abduction_deg']
+    if metrics.get('flexion_deg') is not None:
+        row['last_peak_flexion'] = metrics['flexion_deg']
+    return save_memory(patient_id, row)
+
+
+def skip_report_phase(patient_id: str) -> dict[str, Any]:
+    row = load_memory(patient_id)
+    row['report_phase'] = 'skipped'
+    return save_memory(patient_id, row)
+
+
+def report_phase_complete(memory: dict[str, Any] | None) -> bool:
+    return (memory or {}).get('report_phase') in ('done', 'skipped')
 
 
 def next_intake_field(intake: dict[str, Any] | None) -> str | None:

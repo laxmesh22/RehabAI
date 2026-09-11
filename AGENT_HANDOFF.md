@@ -1,50 +1,23 @@
 # RehabAI — agent handoff
 
 ## User request and scope
-MEDHA PS 8: AI-assisted adhesive capsulitis assessment and guided rehabilitation. Not a diagnosis service. Jetson + RealSense + arm IMU + optional GPU server. Continue this checkout; do not restart scaffolding.
+MEDHA PS 8 adhesive capsulitis assessment support — not a diagnosis service.
 
 ## Product decisions
-- Hospital studio on FastAPI (`backend.main`) is the demo product.
-- **Consumer APK** (`mobile/`, Capacitor) is Talk-first at `/?consumer=1#/app`, pointed at the Railway HTTPS host for sharing.
-- Simulation and live sources stay labelled. Phone RGB never mixes with simulation angles.
-- Patient memory is `storage/patients/{id}/memory.json` (ephemeral on Railway without a volume) plus SQL.
-- Voice: Sarvam Subh TTS; Talk STT prefers ElevenLabs then Sarvam; skips Windows offline STT on the live path.
+- **Hospital studio** at `/` unchanged for clinicians.
+- **Consumer app** (`/?consumer=1#/app`) is a **two-slide agentic flow**:
+  1. **Agent** — one voice agent runs the six-question SCRIPT, then asks for a report photo (OCR) or skip.
+  2. **Dashboard** — personalized record from voice scores + OCR metrics + stored ROM/pain charts.
+- OCR extracts only clearly printed numbers (`backend/ocr.py`). Never invents ROM/pain.
+- Memory: `storage/patients/{id}/memory.json` includes `report_phase` and `reports[]`.
+- Railway host: https://rehabai-api-production.up.railway.app (josbahu@gmail.com · project rehabai).
+- APK release: https://github.com/laxmesh22/RehabAI/releases/tag/consumer-apk-v0.1.0
 
-## Current status (2026-09-11, Railway + shareable APK)
+## Verification
+- `python -m unittest tests.test_ocr tests.test_consumer tests.test_voice -v` — OK.
+- Cache-bust `?v=25` / `style.css?v=nura12`.
 
-### Hosted backend (Railway · josbahu@gmail.com)
-- Project: **rehabai** · Service: **rehabai-api**
-- URL: https://rehabai-api-production.up.railway.app
-- Consumer: https://rehabai-api-production.up.railway.app/?consumer=1#/app
-- Domain target port: **8080** (Railway `PORT`)
-- Voice keys loaded from local `.env` into Railway variables (not in git)
-
-### Shareable APK
-- GitHub release: https://github.com/laxmesh22/RehabAI/releases/tag/consumer-apk-v0.1.0
-- Local copy: `releases/RehabAI-consumer-debug.apk` (~3.8 MB)
-- Capacitor `server.url` → Railway consumer shell
-- CI workflow: `.github/workflows/build-apk.yml`
-
-### Verification
-- Railway `/api/health` → 200, `source=simulation`, voice providers configured
-- Browser: Railway consumer greets Ananya and shows Talk dock
-- Local `gradlew assembleDebug` blocked on this PC by TLS MITM to Maven; CI build succeeded
-- Hardware / clinical accuracy NOT verified
-
-## How to run locally
-```
-python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
-```
-
-Redeploy Railway from repo root (unset SSL_CERT_FILE if CLI fails):
-```
-railway up -y -d -s rehabai-api
-```
-
-## Next actions
-1. Share the GitHub release APK or the Railway consumer URL.
-2. Optional: attach a Railway volume for persistent `storage/` + SQLite.
-3. Jetson RealSense + pose model path remains local/hardware work.
-
-## Continuation
-Keep simulation vs live distinct. Never report hardware/clinical validation from simulation.
+## Next
+1. Redeploy Railway after this push.
+2. Rebuild APK workflow when consumer URL/UI should ship to phones.
+3. Optional: install tesseract on Railway for offline OCR (Claude vision is fallback).

@@ -33,6 +33,10 @@ def sanitize_memory_slice(raw: dict[str, Any] | None) -> dict[str, Any]:
     return {
         'intake_scores': scores,
         'intake_confirmed': bool(intake.get('confirmed')),
+        'report_phase': raw.get('report_phase') if raw.get('report_phase') in ('needed', 'done', 'skipped') else 'needed',
+        'ocr_abduction': None,
+        'ocr_flexion': None,
+        'ocr_pain': None,
         'last_peak_abduction': raw.get('last_peak_abduction'),
         'last_peak_flexion': raw.get('last_peak_flexion'),
         'last_pain_after': raw.get('last_pain_after'),
@@ -60,6 +64,14 @@ def patient_memory_for_agent(db, patient_id: str) -> dict[str, Any]:
         memory['stored_pain_movement'] = {
             'current': pain.get('current'),
         }
+    reports = load_memory(patient_id).get('reports') or []
+    if reports:
+        last = reports[-1] if isinstance(reports[-1], dict) else {}
+        metrics = last.get('metrics') if isinstance(last.get('metrics'), dict) else {}
+        memory['ocr_abduction'] = metrics.get('abduction_deg')
+        memory['ocr_flexion'] = metrics.get('flexion_deg')
+        memory['ocr_pain'] = metrics.get('pain_score')
+        memory['ocr_engine'] = last.get('engine')
     rom = get_rom_history(db, patient_id) or []
     pain_rows = get_pain_history(db, patient_id) or []
     memory['rom_point_count'] = len(rom)

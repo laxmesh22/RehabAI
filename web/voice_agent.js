@@ -281,6 +281,11 @@
           global.RehabIntakeOnParsed(data.parsed, data.transcript);
         }
         applyStudioAction(data.action);
+        if (data.action === 'await_report') {
+          document.getElementById('report-panel')?.classList.add('hot');
+          document.getElementById('report-status') && (document.getElementById('report-status').textContent =
+            'Upload a report photo, or tap Skip report.');
+        }
         if (data.spoken) await playReply(data);
         if (!talking || gen !== callGen) break;
         await sleep(400);

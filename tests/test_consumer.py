@@ -79,16 +79,19 @@ class ConsumerVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second['intake_field'], 'pain_movement')
         self.assertIn('Saved', second['spoken'])
 
-    async def test_consumer_completes_to_open_home(self):
+    async def test_consumer_completes_to_report_phase(self):
         from agent import consumer_voice
         from backend.intake import INTAKE_FIELDS, apply_confirmed_value
         intake = empty_intake()
         for i, fid in enumerate(INTAKE_FIELDS):
             intake = apply_confirmed_value(intake, fid, min(i, 4 if 'difficulty' in fid else 10), 'voice')
-        memory_mod.save_memory('P-done', {'intake': intake})
-        row = await consumer_voice.consumer_reply('ok', patient_id='P-done', language='en-IN')
-        self.assertEqual(row['action'], 'open_home')
-        self.assertIn('not a diagnosis', row['spoken'].lower())
+        memory_mod.save_memory('P-done', {'intake': intake, 'report_phase': 'needed'})
+        row = await consumer_voice.consumer_reply('', patient_id='P-done', language='en-IN')
+        self.assertEqual(row['action'], 'await_report')
+        self.assertEqual(row['phase'], 'report')
+        skip = await consumer_voice.consumer_reply('skip', patient_id='P-done', language='en-IN')
+        self.assertEqual(skip['action'], 'open_home')
+        self.assertIn('not a diagnosis', skip['spoken'].lower())
 
 
 class PhoneFrameTests(unittest.TestCase):
