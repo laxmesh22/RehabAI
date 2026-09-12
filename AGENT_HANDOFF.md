@@ -110,8 +110,18 @@ repo/docs references, and `Start-RehabAI.ps1`'s filename.
 - Packaged `index.html` still hardcodes the campus LAN `172.16.6.7:8000` plus Railway.
 - Railway/APK: the deployed API needs its own pose backend for phone capture there.
 
+## Release (2026-09-12)
+- Commit `3722de5` on `main`, pushed to `https://github.com/laxmesh22/RehabAI.git`.
+- Railway `rehabai-api` redeployed via `railway up` (GitHub push does not auto-deploy
+  this service). Deployment `69ff31ac` SUCCESS. Live title is PhysioBuDDY, `app.js?v=66`,
+  `phone_pose_available: true`.
+- APK: `releases/PhysioBuDDY-consumer-20260912-1114.apk` (and
+  `releases/PhysioBuDDY-consumer-debug.apk`). Debug build, same `appId`
+  `ai.rehab.consumer` so it upgrades over the previous RehabAI install. The home-screen
+  label is now PhysioBuDDY.
+
 ## Next
 - Stand in front of the camera and run the baseline for real; confirm abduction and the
   side-on flexion produce sane angles and that the overlay lands on the right limb.
-- Commit: the tree has had extensive uncommitted changes since `7b74104`.
-- Rebuild the APK once the flow is confirmed on a person.
+- Install the new APK. If Railway DNS fails on campus Wi-Fi, use **Use Railway (OpenCV)**
+  or reset the API host.
