@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -130,7 +131,9 @@ class ConsumerVoiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(row['action'], 'await_report')
             self.assertEqual(row['phase'], 'report')
             skip = await consumer_voice.consumer_reply('skip', patient_id='P-done', language='en-IN')
-        self.assertEqual(skip['action'], 'open_home')
+        # Skipping the report hands off to the camera baseline, not the dashboard.
+        self.assertEqual(skip['action'], 'start_assessment')
+        self.assertEqual(skip['phase'], 'baseline')
         self.assertIn('not a diagnosis', skip['spoken'].lower())
 
     async def test_consumer_dashboard_history_action(self):
@@ -144,6 +147,7 @@ class ConsumerVoiceTests(unittest.IsolatedAsyncioTestCase):
             empty_profile(), 'full_name', 'Ravi', 'Ravi'), 'age', 40, '40'), 'affected_side', 'left', 'left')
         memory_mod.save_memory('P-hist', {
             'intake': intake, 'profile': profile, 'report_phase': 'skipped',
+            'baseline': {'phase': 'done', 'abduction_deg': 70, 'flexion_deg': 96},
             'session_summaries': [{'peak': 70, 'source': 'simulation', 'movement': 'abduction'}],
         })
         with patch.object(consumer_voice, 'ANTHROPIC_API_KEY', ''):
@@ -151,6 +155,50 @@ class ConsumerVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row['action'], 'open_history')
         self.assertIn('not a diagnosis', row['spoken'].lower())
         self.assertNotIn('you have frozen', row['spoken'].lower())
+
+    async def test_baseline_is_measured_before_the_dashboard_or_rehab(self):
+        from agent import consumer_voice
+        from backend.intake import INTAKE_FIELDS, apply_confirmed_value
+        from backend.profile import apply_profile_value, empty_profile
+        intake = empty_intake()
+        for i, fid in enumerate(INTAKE_FIELDS):
+            intake = apply_confirmed_value(intake, fid, min(i, 4 if 'difficulty' in fid else 10), 'voice')
+        profile = apply_profile_value(apply_profile_value(apply_profile_value(
+            empty_profile(), 'full_name', 'Ravi', 'Ravi'), 'age', 40, '40'), 'affected_side', 'right', 'right')
+        memory_mod.save_memory('P-base', {
+            'intake': intake, 'profile': profile, 'report_phase': 'skipped',
+        })
+        with patch.object(consumer_voice, 'ANTHROPIC_API_KEY', ''):
+            # Asking for a rehab session first still routes through the measurement.
+            row = await consumer_voice.consumer_reply('start session', patient_id='P-base', language='en-IN')
+            self.assertEqual(row['action'], 'start_assessment')
+            self.assertEqual(row['phase'], 'baseline')
+            # Opening Talk with no speech hands straight off to the camera.
+            opened = await consumer_voice.consumer_reply(
+                '', patient_id='P-base', language='en-IN', opening=True,
+            )
+            self.assertEqual(opened['action'], 'start_assessment')
+            # Abduction measured, flexion still missing.
+            memory_mod.record_baseline_measurement('P-base', 'abduction', 84.0, 'SESSION_A', 'phone')
+            mid = await consumer_voice.consumer_reply('start session', patient_id='P-base', language='en-IN')
+            self.assertEqual(mid['action'], 'start_assessment')
+            self.assertEqual(
+                memory_mod.next_baseline_movement(memory_mod.load_memory('P-base')['baseline']), 'flexion',
+            )
+            # Both measured — rehab is now reachable.
+            memory_mod.record_baseline_measurement('P-base', 'flexion', 101.0, 'SESSION_B', 'phone')
+            done = await consumer_voice.consumer_reply('start session', patient_id='P-base', language='en-IN')
+        self.assertEqual(done['action'], 'start_session')
+        self.assertEqual(done['phase'], 'dashboard')
+
+    async def test_baseline_never_invents_a_missing_peak(self):
+        memory_mod.save_memory('P-nopeak', {})
+        memory_mod.record_baseline_measurement('P-nopeak', 'abduction', None, 'SESSION_X', 'phone')
+        row = memory_mod.load_memory('P-nopeak')['baseline']
+        self.assertIsNone(row['abduction_deg'])
+        self.assertEqual(row['phase'], 'needed')
+        self.assertEqual(row['session_ids'], [])
+        self.assertFalse(memory_mod.baseline_complete(memory_mod.load_memory('P-nopeak')))
 
     async def test_llm_turn_is_spoken_instead_of_script(self):
         from agent import consumer_voice
@@ -274,8 +322,11 @@ class PhoneFrameTests(unittest.TestCase):
     def test_phone_frame_without_pose_model_fails_closed(self):
         from backend.services.live_hub import LiveHub
         hub = LiveHub()
+        # Pinned off, so a pose sidecar running on the developer's machine cannot
+        # turn this into a passing test of the wrong path.
         with patch('backend.services.live_hub.POSE_MODEL', ''), \
-             patch('edge.phone_capture.POSE_MODEL', ''):
+             patch('edge.phone_capture.POSE_MODEL', ''), \
+             patch('edge.phone_capture.phone_pose_available', return_value=False):
             with self.assertRaises(ValueError) as ctx:
                 hub.ingest_phone_frame('missing', b'not-a-jpeg')
             self.assertIn('REHABAI_POSE', str(ctx.exception))
@@ -372,6 +423,87 @@ class ConsumerApiTests(unittest.TestCase):
         self.assertTrue(me.get('report_complete'))
         self.assertEqual(me.get('phase'), 'dashboard')
 
+    def fresh_consumer(self):
+        """Own account per test — these flows mutate the patient record."""
+        boot = self.client.post('/api/consumer/bootstrap', json={'full_name': 'Baseline Test'})
+        self.assertEqual(boot.status_code, 200, boot.text)
+        row = boot.json()
+        return row['patient_id'], {'Authorization': 'Bearer ' + row['token']}
+
+    def talked_consumer(self):
+        from backend.intake import INTAKE_FIELDS, apply_confirmed_value
+        from backend.profile import apply_profile_value, empty_profile
+        patient_id, headers = self.fresh_consumer()
+        intake = empty_intake()
+        for i, fid in enumerate(INTAKE_FIELDS):
+            intake = apply_confirmed_value(intake, fid, min(i, 4 if 'difficulty' in fid else 10), 'voice')
+        profile = apply_profile_value(apply_profile_value(apply_profile_value(
+            empty_profile(), 'full_name', 'Ravi', 'Ravi'), 'age', 41, '41'), 'affected_side', 'right', 'right')
+        memory_mod.save_memory(patient_id, {
+            'intake': intake, 'profile': profile, 'report_phase': 'skipped',
+        })
+        return patient_id, headers
+
+    def test_assessment_session_records_a_baseline_and_unlocks_home(self):
+        patient_id, headers = self.talked_consumer()
+        me = self.client.get('/api/consumer/me', headers=headers).json()
+        self.assertFalse(me['home_ready'])
+        self.assertEqual(me['phase'], 'baseline')
+        self.assertEqual(me['baseline']['next_movement'], 'abduction')
+        self.assertEqual(me['baseline']['next_exercise_id'], 'shoulder_abduction')
+
+        peaks = {}
+        for movement, exercise in (('abduction', 'shoulder_abduction'), ('flexion', 'shoulder_flexion')):
+            start = self.client.post('/api/sessions', headers=headers, json={
+                'patient_id': patient_id, 'exercise_id': exercise, 'side': 'right',
+                'goal': 1, 'kind': 'assessment', 'capture': 'simulation',
+            })
+            self.assertEqual(start.status_code, 200, start.text)
+            sid = start.json()['id']
+            # Intake answered in Talk carries onto the assessment; it is not re-asked.
+            self.assertTrue(start.json()['intake']['confirmed'])
+            self.client.post(f'/api/sessions/{sid}/confirm', headers=headers, json={})
+            time.sleep(0.6)
+            finish = self.client.post(f'/api/sessions/{sid}/finish', headers=headers, json={
+                'pain_after': 4, 'create_assessment': True,
+            })
+            self.assertEqual(finish.status_code, 200, finish.text)
+            peaks[movement] = finish.json()['session']['peak_angle']
+            self.assertEqual(finish.json()['baseline'][f'{movement}_deg'], peaks[movement])
+
+        after = self.client.get('/api/consumer/me', headers=headers).json()
+        self.assertTrue(after['home_ready'])
+        self.assertEqual(after['phase'], 'dashboard')
+        self.assertTrue(after['baseline']['complete'])
+        self.assertIsNone(after['baseline']['next_movement'])
+        for movement in ('abduction', 'flexion'):
+            self.assertEqual(after['baseline'][f'{movement}_deg'], peaks[movement])
+
+    def test_sagittal_flexion_is_allowed_on_the_phone_camera(self):
+        patient_id, headers = self.talked_consumer()
+        with patch('backend.routers.phone_pose_available', return_value=True), \
+             patch('edge.phone_capture.phone_pose_available', return_value=True), \
+             patch('edge.phone_capture.PhonePoseEstimator'):
+            for exercise, status in (('shoulder_flexion', 200), ('external_rotation', 400)):
+                res = self.client.post('/api/sessions', headers=headers, json={
+                    'patient_id': patient_id, 'exercise_id': exercise, 'side': 'right',
+                    'goal': 1, 'kind': 'assessment', 'capture': 'phone',
+                })
+                self.assertEqual(res.status_code, status, res.text)
+
+    def test_baseline_skip_records_no_range(self):
+        _patient_id, headers = self.talked_consumer()
+        skip = self.client.post('/api/consumer/baseline-skip', headers=headers, json={})
+        self.assertEqual(skip.status_code, 200, skip.text)
+        body = skip.json()
+        self.assertEqual(body['action'], 'open_home')
+        self.assertEqual(body['baseline']['phase'], 'skipped')
+        self.assertIsNone(body['baseline']['abduction_deg'])
+        self.assertIsNone(body['baseline']['flexion_deg'])
+        me = self.client.get('/api/consumer/me', headers=headers).json()
+        self.assertTrue(me['home_ready'])
+        self.assertEqual(me['phase'], 'dashboard')
+
     def test_phone_frame_endpoint_without_model(self):
         start = self.client.post('/api/sessions', headers=self.headers, json={
             'patient_id': self.patient_id, 'exercise_id': 'shoulder_abduction',
@@ -380,11 +512,13 @@ class ConsumerApiTests(unittest.TestCase):
         self.assertEqual(start.status_code, 200)
         sid = start.json()['id']
         fake = io.BytesIO(b'\xff\xd8\xff\xd9')
-        res = self.client.post(
-            f'/api/sessions/{sid}/phone-frame',
-            headers=self.headers,
-            files={'frame': ('frame.jpg', fake, 'image/jpeg')},
-        )
+        # The router binds this at import time, so patch it there.
+        with patch('backend.routers.phone_pose_available', return_value=False):
+            res = self.client.post(
+                f'/api/sessions/{sid}/phone-frame',
+                headers=self.headers,
+                files={'frame': ('frame.jpg', fake, 'image/jpeg')},
+            )
         self.assertEqual(res.status_code, 400)
         detail = res.json()['detail']
         self.assertTrue(

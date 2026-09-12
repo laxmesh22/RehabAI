@@ -70,7 +70,12 @@ SYSTEM = (
 )
 
 
-def missing_goals(profile: dict[str, Any], intake: dict[str, Any], report_phase: str) -> list[str]:
+def missing_goals(
+    profile: dict[str, Any],
+    intake: dict[str, Any],
+    report_phase: str,
+    baseline_movement: str | None = None,
+) -> list[str]:
     goals = []
     for fid in PROFILE_FIELDS:
         if profile.get(fid) in (None, ''):
@@ -81,6 +86,11 @@ def missing_goals(profile: dict[str, Any], intake: dict[str, Any], report_phase:
             goals.append(f"{fid} ({spec['min']}-{spec['max']})")
     if report_phase == 'needed' and not goals:
         goals.append('optional clinic report photo, or skip')
+    if baseline_movement and not goals:
+        goals.append(
+            f'camera baseline for {baseline_movement} is not measured yet — '
+            'say you will measure it now and use action=start_assessment'
+        )
     return goals
 
 
@@ -198,6 +208,7 @@ def fallback_spoken(
     missing: list[str],
     saved: list[tuple[str, str, Any]],
     first_name: str = '',
+    baseline_movement: str | None = None,
 ) -> str:
     """Last resort if Claude is down. Not a questionnaire and not a FAQ."""
     hindi = language == 'hi-IN'
@@ -205,6 +216,12 @@ def fallback_spoken(
     if saved and not any(kind == 'safety' for kind, _f, _v in saved):
         last = saved[-1][2]
         bits.append(f'{last}।' if hindi else f'{last}.')
+    if baseline_movement:
+        bits.append(
+            'अब कैमरे से माप लेते हैं। यह निदान नहीं है।' if hindi
+            else f'Let us measure your {baseline_movement} with the camera now. This is not a diagnosis.'
+        )
+        return ' '.join(bits)[:280]
     bits.append('मैं सुन रहा हूँ। यह निदान नहीं है।' if hindi else 'I am listening. This is not a diagnosis.')
     return ' '.join(bits)[:280]
 

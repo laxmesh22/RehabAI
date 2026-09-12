@@ -18,7 +18,9 @@ _OPENCV_KINDS = frozenset({'opencv', 'shoulder_tracker'})
 class PhonePoseEstimator:
     """Run phone frames through a local model or the configured hosted pose service."""
 
-    def __init__(self, model_path: str | None = None, pose_kind: str | None = None, device: str | None = None):
+    def __init__(self, model_path: str | None = None, pose_kind: str | None = None, device: str | None = None,
+                 plane: str = 'frontal'):
+        self.plane = 'sagittal' if plane == 'sagittal' else 'frontal'
         self.inference_url = PHONE_INFERENCE_URL
         self.client = None
         self.estimator = None
@@ -60,7 +62,10 @@ class PhonePoseEstimator:
         pose = self._hosted_pose(jpeg_bytes) if self.client else self.estimator.predict(rgb, stamp)
         self.version = pose.model_version
         points = _planar_points(pose.landmarks, rgb.shape[1], rgb.shape[0])
-        framing_ok = _framing_ok(pose.landmarks)
+        framing_ok = (
+            _sagittal_framing_ok(pose.landmarks) if self.plane == 'sagittal'
+            else _framing_ok(pose.landmarks)
+        )
         from edge.pose.opencv_mediapipe_estimator import landmark_quality
         quality = landmark_quality(pose.landmarks)
         inference_ms = getattr(self.estimator, 'last_inference_ms', None) if self.estimator else None
@@ -89,8 +94,9 @@ class PhonePoseEstimator:
             'framing_ok': framing_ok,
             'simulation': False,
             'rgb': rgb,
-            'capture_profile': 'phone_rgb_2d',
+            'capture_profile': 'phone_rgb_2d_sagittal' if self.plane == 'sagittal' else 'phone_rgb_2d',
             'measurement_geometry': 'monocular_2d_projection',
+            'measurement_plane': self.plane,
             'pose_quality': quality,
             'sensors': {'camera': 'phone', 'depth': 'not_available', 'imu': 'off'},
         }
@@ -212,6 +218,37 @@ def _planar_points(landmarks2d, width: int = 1, height: int = 1):
             confidence=conf,
         )
     return points
+
+
+# Side-on, the far shoulder and hip are occluded, so MediaPipe reports them with
+# low visibility. Requiring frontal confidence there would reject every valid frame.
+_SAGITTAL_MIN_CONF = 0.45
+# Shoulders must nearly overlap, otherwise the patient has not turned and a
+# forward raise would be measured as if it were in the frontal plane.
+_SAGITTAL_MAX_SHOULDER_SPAN = 0.16
+
+
+def _sagittal_framing_ok(landmarks2d) -> bool:
+    required = ('left_shoulder', 'right_shoulder', 'left_hip', 'right_hip')
+    if not all(name in landmarks2d for name in required):
+        return False
+    if not any(
+        name in landmarks2d and landmarks2d[name].confidence >= _SAGITTAL_MIN_CONF
+        for name in ('left_elbow', 'right_elbow')
+    ):
+        return False
+    in_frame = all(
+        0.02 <= landmarks2d[name].x <= 0.98 and 0.02 <= landmarks2d[name].y <= 0.98
+        for name in required
+    )
+    torso_visible = any(landmarks2d[name].confidence >= _SAGITTAL_MIN_CONF for name in ('left_hip', 'right_hip'))
+    shoulder_span = abs(landmarks2d['left_shoulder'].x - landmarks2d['right_shoulder'].x)
+    torso_height = abs(
+        (landmarks2d['left_hip'].y + landmarks2d['right_hip'].y) / 2
+        - (landmarks2d['left_shoulder'].y + landmarks2d['right_shoulder'].y) / 2
+    )
+    turned = shoulder_span <= _SAGITTAL_MAX_SHOULDER_SPAN
+    return in_frame and torso_visible and turned and 0.06 <= torso_height <= 0.85
 
 
 def _framing_ok(landmarks2d) -> bool:

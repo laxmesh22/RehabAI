@@ -1,7 +1,8 @@
 """Shared measurement pipeline. Pose model, camera, and IMU are replaceable."""
 from edge.biomechanics.angles import (
     calculate_abduction, calculate_elbow_bend, calculate_elevation,
-    calculate_flexion, compensation,
+    calculate_flexion, calculate_sagittal_elevation, compensation, sagittal_compensation,
+    torso_down,
 )
 from edge.calibration import evaluate_calibration
 from edge.depth.filtering import AngleMovingAverage, SkeletonEMA
@@ -25,7 +26,9 @@ MOVEMENT_FN = {
 }
 
 
-def features(points, side, movement, reference_basis):
+def features(points, side, movement, reference_basis, plane='frontal'):
+    if plane == 'sagittal':
+        return _sagittal_features(points, side, reference_basis)
     angle = MOVEMENT_FN[movement](points, side)
     if -12 <= angle < 0:
         angle = 0.0
@@ -48,6 +51,29 @@ def features(points, side, movement, reference_basis):
     }
 
 
+def _sagittal_features(points, side, reference_basis):
+    """Side-on 2D view: the far shoulder and hip are occluded, so only the
+    torso long axis and the near arm are trusted."""
+    angle = calculate_sagittal_elevation(points, side)
+    comps = sagittal_compensation(points, reference_basis[1])
+    elbow = None
+    try:
+        elbow = calculate_elbow_bend(points, side)
+    except (KeyError, ValueError):
+        pass
+    needed = (side+'_shoulder', side+'_elbow')
+    confidence = min(points[name].confidence for name in needed)
+    return {
+        'angle': angle,
+        'torso_lean': abs(comps['torso_lean']),
+        'lateral_lean': comps['lateral_lean'],
+        'forward_lean': comps['forward_lean'],
+        'elbow_bend': elbow,
+        'confidence': confidence,
+        'elevation': angle,
+    }
+
+
 class VisionPipeline:
     def __init__(self, session_id, exercise_id, side, target, goal, source='simulation'):
         spec = get_exercise(exercise_id)
@@ -58,6 +84,9 @@ class VisionPipeline:
         self.spec = spec
         # Phone RGB is slower (~5–10 Hz) and noisier — softer EMA gap + angle MA.
         phone = source == 'phone'
+        # A single 2D camera cannot resolve a forward raise from the front, so the
+        # sagittal exercises ask the patient to turn and are read in the image plane.
+        self.plane = 'sagittal' if phone and spec.get('phone_plane') == 'sagittal' else 'frontal'
         self.machine = ExerciseMachine(
             target=target, goal=goal, rest_angle=spec['rest_angle'],
             raise_angle=spec['raise_angle'], lean_limit=spec['allowed_compensation'],
@@ -76,6 +105,10 @@ class VisionPipeline:
 
     def calibrate_reference(self, points):
         from edge.biomechanics.angles import torso_basis
+        if self.plane == 'sagittal':
+            down = torso_down(points)
+            self.reference = (self.reference[0], down, self.reference[2])
+            return self.reference
         self.reference = torso_basis(points)
         return self.reference
 
@@ -83,6 +116,7 @@ class VisionPipeline:
         calibration = evaluate_calibration(snapshot)
         extra = {'calibration': calibration, 'source': snapshot.get('source', self.source),
                  'model_version': snapshot.get('model_version', 'unknown'), 'overlay': {'points': {}, 'bones': []},
+                 'measurement_plane': self.plane,
                  'sensors': _sensor_labels(snapshot, self.source),
                  'measurement_profile': snapshot.get('capture_profile', self.source),
                  'measurement_geometry': snapshot.get('measurement_geometry', 'rgbd_3d')}
@@ -103,7 +137,7 @@ class VisionPipeline:
             return self._emit(sample, safety, {}, extra)
         filtered = self.filter.update(points, snapshot['timestamp'])
         try:
-            measured = features(filtered, self.side, self.spec['movement'], self.reference)
+            measured = features(filtered, self.side, self.spec['movement'], self.reference, self.plane)
         except ValueError:
             sample = self.machine.update(snapshot['timestamp'], 0, 0, 0)
             imu_extra, imu_safety = self._imu_state(snapshot, None, 0.0)
@@ -145,8 +179,8 @@ class VisionPipeline:
         })
         sample['feedback'] = coach_message(sample, safety)
         extra.update(overlay=overlay_spec(landmarks, self.side),
-                     lateral_lean=round(measured['lateral_lean'], 1),
-                     forward_lean=round(measured['forward_lean'], 1),
+                     lateral_lean=None if measured['lateral_lean'] is None else round(measured['lateral_lean'], 1),
+                     forward_lean=None if measured['forward_lean'] is None else round(measured['forward_lean'], 1),
                      elbow_bend=None if measured['elbow_bend'] is None else round(measured['elbow_bend'], 1),
                      elevation=round(measured['elevation'], 1),
                      velocity=round(velocity, 1),

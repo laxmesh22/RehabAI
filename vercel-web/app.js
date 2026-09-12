@@ -45,6 +45,16 @@ async function probeApiOrigin(origin, ms = 3500) {
   }
 }
 
+function scoreApiOrigin(origin, data) {
+  if (!data || data.status !== 'ok') return -1;
+  let score = 10;
+  // Prefer hosts that can run phone OpenCV/MediaPipe (otherwise APK only shows Simulation).
+  if (data.phone_pose_available) score += 100;
+  if (String(origin).startsWith('https://')) score += 8;
+  if (/railway\.app/i.test(origin)) score += 20;
+  return score;
+}
+
 async function resolveApiOrigin() {
   const candidates = apiCandidateOrigins();
   if (!candidates.length) {
@@ -56,16 +66,18 @@ async function resolveApiOrigin() {
     }
     return null;
   }
-  for (const origin of candidates) {
-    const data = await probeApiOrigin(origin);
-    if (data) {
-      window.REHABAI_API_ORIGIN = origin;
-      localStorage.setItem('rehabai_api_origin', origin);
-      state.health = data;
-      return origin;
-    }
-  }
-  return null;
+  // Probe every candidate so a sticky LAN URL without OpenCV does not hide Phone camera.
+  const probed = await Promise.all(candidates.map(async (origin) => {
+    const data = await probeApiOrigin(origin, 4500);
+    return { origin, data, score: scoreApiOrigin(origin, data) };
+  }));
+  probed.sort((a, b) => b.score - a.score);
+  const best = probed.find(row => row.score >= 0);
+  if (!best) return null;
+  window.REHABAI_API_ORIGIN = best.origin;
+  localStorage.setItem('rehabai_api_origin', best.origin);
+  state.health = best.data;
+  return best.origin;
 }
 
 function renderOfflineGate(tried) {
@@ -73,7 +85,7 @@ function renderOfflineGate(tried) {
     || '<li><code>https://rehabai-api-production.up.railway.app</code></li>';
   app.innerHTML = `<div class="offline-gate">
     <p class="eyebrow">Connection</p>
-    <h1>Cannot reach RehabAI server</h1>
+    <h1>Cannot reach PhysioBuDDY server</h1>
     <p class="lede">This phone could not resolve or reach the API host (<code>ERR_NAME_NOT_RESOLVED</code> / offline). The app UI is local — only the server link failed.</p>
     <ol class="offline-steps">
       <li>Prefer the <strong>installed APK</strong> (not a Railway link in Chrome).</li>
@@ -145,7 +157,7 @@ function helloLine() {
 }
 
 function initials() {
-  return (state.user?.full_name || 'R').split(/\s+/).map(p => p[0]).slice(0, 2).join('').toUpperCase();
+  return (state.user?.full_name || 'P').split(/\s+/).map(p => p[0]).slice(0, 2).join('').toUpperCase();
 }
 
 async function api(path, body, method) {
@@ -321,6 +333,7 @@ window.RehabStudioActions = {
         };
         return goHome();
       }
+      if (action === 'start_assessment') return goto('#/app/baseline');
       if (action === 'start_session') return document.getElementById('go')?.click() || startConsumerSession();
     }
     const routes = {
@@ -348,6 +361,7 @@ async function route() {
         const live = hash.match(/^#\/live\/([^/]+)/);
         return await renderLive(live[1]);
       }
+      if (hash === '#/app/baseline') return await renderConsumerBaseline();
       if (hash === '#/app/home' || hash === '#/app/account') return await renderConsumerHome();
       return await renderConsumerTalk();
     }
@@ -404,13 +418,13 @@ function shell(content, active) {
   const userIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="3.2"/><path d="M5 19c.8-3.2 3.4-5 7-5s6.2 1.8 7 5"/></svg>';
   app.innerHTML = `<div class="app-shell">
     <aside class="rail">
-      <div class="brand">${brandMark(true)}<strong>RehabAI</strong></div>
+      <div class="brand">${brandMark(true)}<strong>PhysioBuDDY</strong></div>
       ${nav}
       <div class="spacer"></div>
       <div class="profile-cta">
         <span class="tag">${mode.includes('LIVE') ? 'Live' : 'Incomplete'}</span>
         <h3>Your clinic profile</h3>
-        <p>The more RehabAI knows, the better it can personalise the stored record. ${mode}.</p>
+        <p>The more PhysioBuDDY knows, the better it can personalise the stored record. ${mode}.</p>
         <button class="primary" id="logout" type="button">Sign out →</button>
       </div>
     </aside>
@@ -426,7 +440,7 @@ function shell(content, active) {
       ${content.body}
     </div>
   </div>
-  <button type="button" class="voice-dock" id="voice-dock" aria-label="Talk to RehabAI">
+  <button type="button" class="voice-dock" id="voice-dock" aria-label="Talk to PhysioBuDDY">
     <span class="voice-dock-mic" aria-hidden="true"></span>
     <span class="voice-dock-copy"><strong id="voice-dock-title">Talk</strong><em id="voice-dock-hint">Tap to start · talks until you end</em></span>
   </button>`;
@@ -461,7 +475,7 @@ function renderConsumerSignedOut() {
   state.consumer = true;
   app.innerHTML = `<div class="consumer-app talk-focus">
     <header class="consumer-top">
-      <div class="brand">${brandMark(true)}<strong>RehabAI</strong></div>
+      <div class="brand">${brandMark(true)}<strong>PhysioBuDDY</strong></div>
     </header>
     <main class="consumer-main">
       <section class="talk-hero signed-out-hero">
@@ -483,18 +497,20 @@ function renderConsumerSignedOut() {
 
 function consumerShell(content, active) {
   const homeOn = active === '#/app/home' || active === '#/live';
-  const step = content.step != null ? content.step : (homeOn ? 2 : 1);
+  const step = content.step != null ? content.step : (homeOn ? 3 : 1);
   const account = content.account || null;
   const initials = account?.initials || 'R';
   const label = account?.name || 'You';
   app.innerHTML = `<div class="consumer-app talk-focus">
     <header class="consumer-top">
-      <div class="brand">${brandMark(true)}<strong>RehabAI</strong></div>
+      <div class="brand">${brandMark(true)}<strong>PhysioBuDDY</strong></div>
       <div class="consumer-top-right">
         <nav class="consumer-steps" aria-label="Flow">
           <a class="${step === 1 ? 'on' : ''}" href="#/app"><span>1</span> Talk</a>
           <i></i>
-          <a class="${step === 2 ? 'on' : ''}" href="#/app/home"><span>2</span> Home</a>
+          <a class="${step === 2 ? 'on' : ''}" href="#/app/baseline"><span>2</span> Measure</a>
+          <i></i>
+          <a class="${step === 3 ? 'on' : ''}" href="#/app/home"><span>3</span> Home</a>
         </nav>
         ${account ? `<div class="account-menu">
           <button type="button" class="account-chip" id="account-chip" aria-expanded="false" aria-haspopup="true">
@@ -557,7 +573,7 @@ async function renderConsumerTalk() {
   consumerShell({
     step: 1,
     body: `<section class="talk-hero">
-      <h1>RehabAI</h1>
+      <h1>PhysioBuDDY</h1>
       <button type="button" class="talk-orb" id="voice-dock" aria-label="Start Talk">
         <span class="talk-orb-ring" aria-hidden="true"></span>
         <span class="talk-orb-core" aria-hidden="true"></span>
@@ -664,6 +680,134 @@ async function renderConsumerTalk() {
   // Do not auto-start — user taps the big Talk orb.
 }
 
+// What the camera can actually measure, and from where. A single 2D camera reads a
+// forward raise only from the side, so flexion asks the patient to turn.
+const BASELINE_STEPS = {
+  abduction: {
+    name: 'Arm out to the side',
+    stance: 'Stand facing the camera, arms relaxed.',
+    how: 'Raise the affected arm out to the side as far as is comfortable, then lower it slowly.',
+    note: 'Front view · frontal-plane angle · 2D, no depth · unvalidated',
+  },
+  flexion: {
+    name: 'Arm forward',
+    stance: 'Turn so the affected shoulder faces the camera.',
+    how: 'Raise the affected arm forward as far as is comfortable, then lower it slowly.',
+    note: 'Side view · arm elevation in the image plane · not an isolated flexion angle · unvalidated',
+  },
+};
+
+function baselineCapture(me) {
+  return (me.phone_pose_available || state.health?.phone_pose_available) ? 'phone' : 'simulation';
+}
+
+async function startConsumerAssessment(exerciseId, capture) {
+  const me = await api('consumer/me');
+  state.consumerPatientId = me.patient_id;
+  const baseline = me.baseline || {};
+  const exercise = exerciseId || baseline.next_exercise_id;
+  if (!exercise) return goto('#/app/home');
+  const side = (me.affected_side || me.profile?.affected_side) === 'left' ? 'left' : 'right';
+  await startLive(me.patient_id, exercise, true, capture || baselineCapture(me), { side, goal: 3 });
+}
+
+async function renderConsumerBaseline() {
+  window.RehabVoiceAgent?.endTalk?.();
+  const me = await api('consumer/me');
+  state.consumerPatientId = me.patient_id;
+  if (!(me.intake_complete && me.report_complete)) {
+    location.hash = '#/app';
+    return renderConsumerTalk();
+  }
+  const baseline = me.baseline || {};
+  const scores = (me.memory && me.memory.intake_scores) || {};
+  const side = me.affected_side || me.profile?.affected_side || '—';
+  const name = me.display_name || 'there';
+  const initials = String(me.profile?.full_name || state.user?.full_name || 'R')
+    .split(/\s+/).map(p => p[0]).slice(0, 2).join('').toUpperCase() || 'R';
+  const account = { name, initials, email: state.user?.email || '', age: me.age, side: String(side) };
+  const capture = baselineCapture(me);
+  const deg = v => (v == null ? '—' : Math.round(v) + '°');
+  const measured = `<div class="dash-snapshot" aria-label="Measured so far">
+      <article><span>Abduction</span><strong>${deg(baseline.abduction_deg)}</strong><em>${baseline.abduction_deg == null ? 'Not measured' : 'Camera'}</em></article>
+      <article><span>Forward raise</span><strong>${deg(baseline.flexion_deg)}</strong><em>${baseline.flexion_deg == null ? 'Not measured' : 'Camera, side view'}</em></article>
+      <article><span>Pain on move</span><strong>${scores.pain_movement == null ? '—' : scores.pain_movement + '/10'}</strong><em>Your words</em></article>
+    </div>`;
+
+  if (baseline.complete) {
+    consumerShell({
+      step: 2,
+      account,
+      body: `<section class="dash-slide dash-home baseline-slide">
+        <div class="dash-hero">
+          <p class="eyebrow">Baseline recorded · measured values only · not a diagnosis</p>
+          <h1>Here is your starting point</h1>
+          <p class="lede">${escapeHtml(name)}, these are the numbers the camera measured on your ${escapeHtml(String(side))} shoulder today. They are a starting point to compare against, not a diagnosis of any condition.</p>
+          ${measured}
+          <div class="dash-start">
+            <button class="primary start-giant" id="go" type="button">Start rehab session</button>
+            <p class="empty dash-sim-note">${capture === 'phone'
+              ? 'Phone camera · OpenCV + MediaPipe · 2D RGB · unvalidated'
+              : 'OpenCV pose offline on this API — Simulation only (labelled).'}</p>
+            <p class="empty"><a href="#/app/home">Back to You</a> · <button type="button" class="linkish" id="baseline-redo">Measure again</button></p>
+          </div>
+        </div>
+      </section>`,
+    }, '#/app/baseline');
+    $('#go')?.addEventListener('click', () => startConsumerSession(capture).catch(err => {
+      app.insertAdjacentHTML('afterbegin', `<p class="error">${escapeHtml(err.message)}</p>`);
+    }));
+    $('#baseline-redo')?.addEventListener('click', () => startConsumerAssessment('shoulder_abduction', capture).catch(err => {
+      app.insertAdjacentHTML('afterbegin', `<p class="error">${escapeHtml(err.message)}</p>`);
+    }));
+    return;
+  }
+
+  const movement = baseline.next_movement || 'abduction';
+  const step = BASELINE_STEPS[movement] || BASELINE_STEPS.abduction;
+  const stepNo = movement === 'abduction' ? 1 : 2;
+  consumerShell({
+    step: 2,
+    account,
+    body: `<section class="dash-slide dash-home baseline-slide">
+      <div class="dash-hero">
+        <p class="eyebrow">Before we start · measurement ${stepNo} of 2 · not a diagnosis</p>
+        <h1>${escapeHtml(step.name)}</h1>
+        <p class="lede">${escapeHtml(name)}, we measure your ${escapeHtml(String(side))} shoulder once before the first rehab session, so later sessions have something to compare against.</p>
+        ${measured}
+        <div class="dash-start">
+          <ol class="baseline-steps">
+            <li>${escapeHtml(step.stance)}</li>
+            <li>Make sure your shoulders and hips stay in the picture.</li>
+            <li>${escapeHtml(step.how)}</li>
+            <li>Stop and say pause if it hurts. Nothing is measured through pain.</li>
+          </ol>
+          <button class="primary start-giant" id="baseline-go" type="button">Open camera &amp; measure</button>
+          <p class="empty dash-sim-note">${escapeHtml(step.note)}</p>
+          ${capture === 'phone' ? '' : '<p class="empty dash-sim-note">OpenCV pose is offline on this API, so this will be a labelled simulation and not a measurement of you.</p>'}
+          <p class="empty"><button type="button" class="linkish" id="baseline-skip">Skip the measurement</button> · nothing will be recorded</p>
+          <p class="intake-status" id="baseline-status"></p>
+        </div>
+      </div>
+    </section>`,
+  }, '#/app/baseline');
+  $('#baseline-go')?.addEventListener('click', () => {
+    $('#baseline-go').disabled = true;
+    startConsumerAssessment(baseline.next_exercise_id, capture).catch(err => {
+      $('#baseline-go').disabled = false;
+      $('#baseline-status').textContent = err.message || 'Could not open the camera session.';
+    });
+  });
+  $('#baseline-skip')?.addEventListener('click', async () => {
+    try {
+      await api('consumer/baseline-skip', {});
+      goto('#/app/home');
+    } catch (err) {
+      $('#baseline-status').textContent = err.message || 'Could not skip the measurement.';
+    }
+  });
+}
+
 async function renderConsumerHome() {
   window.RehabVoiceAgent?.endTalk?.();
   const [me, exercises] = await Promise.all([
@@ -671,9 +815,14 @@ async function renderConsumerHome() {
     loadExerciseLibrary(),
   ]);
   state.consumerPatientId = me.patient_id;
-  if (!(me.home_ready || (me.intake_complete && me.report_complete))) {
+  if (!(me.intake_complete && me.report_complete)) {
     location.hash = '#/app';
     return renderConsumerTalk();
+  }
+  // Talk is done but the camera has not measured anything yet.
+  if (!me.home_ready) {
+    location.hash = '#/app/baseline';
+    return renderConsumerBaseline();
   }
   window.RehabVoiceContext = { scene: 'consumer', patient_id: me.patient_id };
   const progress = me.progress && !me.progress.error ? me.progress : {};
@@ -691,7 +840,9 @@ async function renderConsumerHome() {
   let selectedExercise = exercises.find(e => e.exercise_id === 'shoulder_abduction')?.exercise_id
     || exercises[0]?.exercise_id
     || 'shoulder_abduction';
-  let selectedCapture = me.phone_pose_available ? 'phone' : 'simulation';
+  const phonePose = Boolean(me.phone_pose_available || state.health?.phone_pose_available);
+  let selectedCapture = phonePose ? 'phone' : 'simulation';
+  const apiHost = apiOrigin() || location.origin;
   const selected = (exercises || []).find(e => e.exercise_id === selectedExercise) || {};
   const showCharts = abdSeries.length > 1 || painMove.length > 1;
   const historyRows = (recent.length ? recent.slice().reverse() : []).slice(0, 8).map(s => {
@@ -714,7 +865,7 @@ async function renderConsumerHome() {
     side: String(side),
   };
   consumerShell({
-    step: 2,
+    step: 3,
     account,
     body: `<section class="dash-slide dash-home">
       <div class="dash-hero">
@@ -754,13 +905,16 @@ async function renderConsumerHome() {
           ${exercisePickerHtml(exercises, selectedExercise, 'chips')}
           <p class="dash-pick-meta" id="dash-pick-meta">${escapeHtml(selected.name || 'Exercise')} · target ${Number(selected.target_range) || '—'}°</p>
           <div class="capture-choice" aria-label="Measurement source">
-            ${me.phone_pose_available ? '<button type="button" data-capture="phone" class="is-selected">Phone camera</button>' : ''}
-            <button type="button" data-capture="simulation" class="${me.phone_pose_available ? '' : 'is-selected'}">Simulation</button>
+            ${phonePose ? '<button type="button" data-capture="phone" class="is-selected">Phone camera · OpenCV</button>' : ''}
+            <button type="button" data-capture="simulation" class="${phonePose ? '' : 'is-selected'}">Simulation</button>
           </div>
           <button class="primary start-giant" id="go" type="button">Start &amp; record session</button>
-          <p class="empty dash-sim-note" id="capture-note">${me.phone_pose_available
+          <p class="empty dash-sim-note" id="capture-note">${phonePose
             ? 'Phone camera · OpenCV + MediaPipe (Shoulder Tracker) · 2D RGB · not diagnosis'
-            : 'Simulation selected · synthetic measurements (labelled).'}</p>
+            : 'OpenCV pose offline on this API — Simulation only (labelled).'}</p>
+          ${phonePose ? '' : `<p class="empty dash-sim-note">API: <code>${escapeHtml(apiHost)}</code> · phone pose not ready.
+            <button type="button" class="ghost" id="dash-use-railway">Use Railway (OpenCV)</button>
+            <button type="button" class="ghost" id="dash-clear-api">Reset API host</button></p>`}
         </div>
       </div>
       <section class="dash-history" id="dash-history" aria-label="Past sessions">
@@ -801,6 +955,24 @@ async function renderConsumerHome() {
       ? 'Phone camera · OpenCV + MediaPipe (Shoulder Tracker) · 2D RGB · not diagnosis'
       : 'Simulation selected · synthetic measurements (labelled).';
   }));
+  $('#dash-use-railway')?.addEventListener('click', () => {
+    const cloud = 'https://rehabai-api-production.up.railway.app';
+    localStorage.setItem('rehabai_api_origin', cloud);
+    window.REHABAI_API_ORIGIN = cloud;
+    // Hosted DB is separate from clinic LAN — clear local session so login/bootstrap retries.
+    localStorage.removeItem('rehabai_token');
+    state.token = null;
+    state.user = null;
+    location.hash = '#/app';
+    location.reload();
+  });
+  $('#dash-clear-api')?.addEventListener('click', () => {
+    localStorage.removeItem('rehabai_api_origin');
+    localStorage.removeItem('rehabai_token');
+    state.token = null;
+    state.user = null;
+    location.reload();
+  });
   $('#go')?.addEventListener('click', () => startConsumerSession(selectedCapture, selectedExercise));
 }
 
@@ -811,7 +983,7 @@ function renderLogin() {
         ${brandMark(false, true)}
         <p class="eyebrow" style="margin-top:22px">MEDHA · PS 8</p>
         <h1>A digital twin of the <em>shoulder journey</em>.</h1>
-        <p>RehabAI measures movement, guides rehabilitation, and keeps a longitudinal record. The clinician stays responsible for diagnosis and treatment.</p>
+        <p>PhysioBuDDY measures movement, guides rehabilitation, and keeps a longitudinal record. The clinician stays responsible for diagnosis and treatment.</p>
       </div>
       <p>Intel RealSense · Jetson · arm IMU · FastAPI</p>
     </section>
@@ -974,7 +1146,7 @@ async function renderPatients() {
   const first = rows[0];
   const consumerCount = rows.filter(p => p.account_source === 'consumer').length;
   shell({
-    header: `<div class="row"><div><h1>Patients</h1><p>Clinic registrations and RehabAI app accounts share this hospital caseload. App logins appear with a Consumer badge.</p></div>${state.user.role !== 'PATIENT' ? '<button class="primary" id="new-patient" type="button">Register patient</button>' : ''}</div>`,
+    header: `<div class="row"><div><h1>Patients</h1><p>Clinic registrations and PhysioBuDDY app accounts share this hospital caseload. App logins appear with a Consumer badge.</p></div>${state.user.role !== 'PATIENT' ? '<button class="primary" id="new-patient" type="button">Register patient</button>' : ''}</div>`,
     body: `<div class="stat-row">
         <div><strong>${rows.length}</strong><span>Patients</span></div>
         <div><strong>${consumerCount}</strong><span>App accounts</span></div>
@@ -1008,7 +1180,7 @@ async function renderPatients() {
         <div class="panel mint">
           <h2>${escapeHtml(first ? first.full_name : 'Caseload')}</h2>
           <p class="sub">${escapeHtml(first ? first.mrn + ' · ' + first.affected_side + ' shoulder' : 'No patient loaded')}</p>
-          <p>${first ? (first.account_source === 'consumer' ? 'RehabAI app account — Talk and phone sessions sync here.' : 'Open the record to start assessment or review stored ROM and pain.') : ''}</p>
+          <p>${first ? (first.account_source === 'consumer' ? 'PhysioBuDDY app account — Talk and phone sessions sync here.' : 'Open the record to start assessment or review stored ROM and pain.') : ''}</p>
           ${first ? `<p style="margin-top:16px"><a class="primary" href="#/patients/${first.id}" style="display:inline-block;text-decoration:none">Open record →</a></p>` : ''}
         </div>
       </div>`
@@ -1071,7 +1243,7 @@ async function renderPatient(id) {
     header: `<p class="eyebrow">${patient.is_demo ? 'DEMO PATIENT' : (patient.account_source === 'consumer' ? 'APP / TALK PATIENT' : 'PATIENT')} · ${escapeHtml(patient.mrn)}</p>
       <h1>${escapeHtml(patient.full_name)}</h1>
       <p>${escapeHtml(patient.clinician_diagnosis || '')} · Affected ${escapeHtml(patient.affected_side)} shoulder
-        ${patient.account_source === 'consumer' ? ' · RehabAI app login' : ''}
+        ${patient.account_source === 'consumer' ? ' · PhysioBuDDY app login' : ''}
         ${patient.last_login_at ? ' · Last login ' + escapeHtml(new Date(patient.last_login_at).toLocaleString()) : ''}</p>`,
     body: `<div class="panel" style="margin-bottom:16px">
         <div class="row">
@@ -1304,6 +1476,8 @@ async function renderLive(sessionId, opts = {}) {
   let painCheck = null;
   const exSpec = (exercises || []).find(e => e.exercise_id === session.exercise_id) || {};
   const avatarDemo = exSpec.avatar_demo || session.exercise_id;
+  // A forward raise has no angle in a frontal 2D view, so it is measured side-on.
+  const sagittalPhone = session.source === 'phone' && exSpec.phone_plane === 'sagittal';
 
   const current = () => fields[index];
   const promptOf = f => (language === 'hi-IN' ? f.prompt_hi : f.prompt_en);
@@ -1357,12 +1531,19 @@ async function renderLive(sessionId, opts = {}) {
               </div>
             </div>
             ${measureMetrics}
-            <p class="feedback" id="fb">Stand in the marked area. Hold a relaxed posture.</p>
+            <p class="feedback" id="fb">${sagittalPhone
+              ? 'Turn so the affected shoulder faces the camera, then hold a relaxed posture.'
+              : 'Stand in the marked area. Hold a relaxed posture.'}</p>
             <p id="sub" class="empty"></p>
             ${session.source === 'phone' ? `<div class="phone-capture-controls">
-              <video id="phone-camera" class="phone-preview phone-mirror" playsinline muted></video>
+              <div class="phone-stage">
+                <video id="phone-camera" class="phone-preview phone-mirror" playsinline muted></video>
+                <canvas id="skel" class="phone-overlay phone-mirror" width="640" height="480" aria-hidden="true"></canvas>
+              </div>
               <button class="primary" id="phone-camera-start" type="button">Enable phone camera</button>
-              <p class="intake-status" id="phone-camera-status">Camera frames stay transient. Only landmarks and measurements are stored.</p>
+              <p class="intake-status" id="phone-camera-status">${sagittalPhone
+                ? 'Stand side-on so the affected shoulder faces the camera. Frames stay transient; only landmarks and measurements are stored.'
+                : 'Camera frames stay transient. Only landmarks and measurements are stored.'}</p>
             </div>` : ''}
             <div class="row live-actions">
               <button class="primary" id="confirm">Confirm tracking & start</button>
@@ -1395,7 +1576,7 @@ async function renderLive(sessionId, opts = {}) {
     const meName = (state.user?.full_name || 'You').split(' ')[0];
     const initials = String(state.user?.full_name || 'R').split(/\s+/).map(p => p[0]).slice(0, 2).join('').toUpperCase();
     consumerShell({
-      step: 2,
+      step: session.kind === 'assessment' ? 2 : 3,
       account: {
         name: meName,
         initials,
@@ -1414,7 +1595,8 @@ async function renderLive(sessionId, opts = {}) {
       body: liveBody,
     }, '#/patients');
   }
-  liveCanvas = null;
+  // The pose the server is actually scoring, drawn over the live camera.
+  liveCanvas = $('#skel');
   mountGuide('#guide3d', {
     exercise: session.exercise_id,
     avatar: avatarDemo,
@@ -1625,8 +1807,11 @@ async function renderLive(sessionId, opts = {}) {
       : s.source === 'phone' ? 'phone RGB · 2D-derived · no depth · unvalidated'
       : 'synthetic RGB-D + IMU';
     const peak = s.peak_angle != null ? s.peak_angle : sum.peak;
+    const baseline = saved.baseline || {};
+    const baselineStep = isConsumerMode() && s.kind === 'assessment';
+    const nextStep = baselineStep && !baseline.complete ? (BASELINE_STEPS[baseline.next_movement] || null) : null;
     $('#recap-panel').innerHTML = `
-      <p class="eyebrow">Session saved · ${source} · not a diagnosis</p>
+      <p class="eyebrow">${baselineStep ? 'Baseline saved' : 'Session saved'} · ${source} · not a diagnosis</p>
       <h2>Stored measurements</h2>
       <div class="metrics">
         <div class="metric"><span>Peak ROM</span><b>${peak == null ? '—' : Math.round(peak) + '°'}</b></div>
@@ -1641,15 +1826,18 @@ async function renderLive(sessionId, opts = {}) {
         <p class="eyebrow">AI session note · measured values · not a diagnosis</p>
         <p>${escapeHtml(saved.insight.spoken)}</p>
       </div>` : ''}
+      ${nextStep ? `<p class="empty">One movement left. Next: ${escapeHtml(nextStep.name.toLowerCase())} — ${escapeHtml(nextStep.stance.toLowerCase())}</p>` : ''}
       <div class="row">
-        <button class="primary" id="recap-patient" type="button">${isConsumerMode() ? 'Back to You' : 'Open patient record'}</button>
+        <button class="primary" id="recap-patient" type="button">${nextStep
+          ? 'Measure ' + escapeHtml(nextStep.name.toLowerCase())
+          : baselineStep ? 'See my baseline' : isConsumerMode() ? 'Back to You' : 'Open patient record'}</button>
         ${isConsumerMode() ? '' : '<button class="ghost" id="recap-xlsx" type="button">Export Excel</button>'}
       </div>
       <p class="intake-status" id="recap-status"></p>`;
     $('#recap-patient')?.addEventListener('click', () => {
       closeLive();
       if (isConsumerMode()) {
-        goto('#/app/home');
+        goto(baselineStep ? '#/app/baseline' : '#/app/home');
         return;
       }
       state.tab = 'overview';
@@ -1763,6 +1951,9 @@ async function renderLive(sessionId, opts = {}) {
   });
   document.querySelectorAll('[data-fault]').forEach(btn => btn.addEventListener('click', () => api(`sessions/${sessionId}/fault`, { fault: btn.dataset.fault })));
   $('#phone-camera-start')?.addEventListener('click', () => startPhoneCamera(sessionId));
+  // Opening the session was the user's gesture; do not make them tap twice.
+  // If the browser refuses, startPhoneCamera leaves the manual button in place.
+  if (session.source === 'phone') startPhoneCamera(sessionId);
   connectLive(sessionId);
 }
 
@@ -1793,7 +1984,7 @@ function applyTelemetry(row) {
     ['Camera', cal.simulation ? 'SIM' : cal.camera_ok],
     ['Depth', cal.simulation ? 'SIM' : (cal.depth_required === false ? 'N/A' : cal.depth_ok)],
     ['Pose', cal.pose_ok],
-    [cal.capture_profile === 'phone_rgb_2d' ? 'Framing' : 'Distance', cal.distance_ok],
+    [String(cal.capture_profile || '').startsWith('phone_rgb_2d') ? 'Framing' : 'Distance', cal.distance_ok],
     ['Arm IMU', imuChip],
   ];
   const calib = $('#calib');
@@ -1955,6 +2146,7 @@ function streamCaption(row) {
 function drawSkeleton(row) {
   const canvas = liveCanvas || $('#skel');
   if (!canvas) return;
+  if ($('#phone-camera')) sizePoseOverlay();
   const ctx = canvas.getContext('2d');
   const w = canvas.width, h = canvas.height;
   if (row.frame_jpeg) {
@@ -2008,14 +2200,27 @@ async function startPhoneCamera(sessionId) {
     if (!video) throw new Error('Phone camera view is unavailable');
     video.srcObject = phoneMediaStream;
     await video.play();
+    sizePoseOverlay();
     if (button) { button.textContent = 'Camera active'; button.disabled = true; }
     if (status) status.textContent = 'Live phone RGB is being analysed. Raw frames are not saved.';
     phoneCaptureCanvas = document.createElement('canvas');
     schedulePhoneFrame(sessionId, 0);
   } catch (err) {
     stopPhoneCamera();
-    if (status) status.textContent = err.message || 'Camera permission was not granted.';
+    if (button) { button.textContent = 'Enable phone camera'; button.disabled = false; }
+    if (status) status.textContent = err.message || 'Camera permission was not granted. Tap Enable phone camera.';
   }
+}
+
+function sizePoseOverlay() {
+  const canvas = liveCanvas || $('#skel');
+  const video = $('#phone-camera');
+  if (!canvas || !video) return;
+  const box = video.getBoundingClientRect();
+  const w = Math.round(box.width) || video.videoWidth || 640;
+  const h = Math.round(box.height) || video.videoHeight || 480;
+  if (canvas.width !== w) canvas.width = w;
+  if (canvas.height !== h) canvas.height = h;
 }
 
 function schedulePhoneFrame(sessionId, delay = 120) {
@@ -2110,7 +2315,7 @@ async function renderReport(id) {
 
 function assistantPanel(patientId) {
   return `<div class="panel">
-    <p class="empty">Talk with RehabAI. No scripted questions. It uses live and stored measurements only — never invents ROM or a diagnosis.</p>
+    <p class="empty">Talk with PhysioBuDDY. No scripted questions. It uses live and stored measurements only — never invents ROM or a diagnosis.</p>
     <div class="chat" id="chat"></div>
     <div class="row">
       <input id="q" style="flex:1" placeholder="Speak with Talk, or type anything…">
@@ -2182,7 +2387,7 @@ async function renderSettings() {
     <p>The station uses <strong>RealSense RGB-D</strong> for 3D ROM and an <strong>arm IMU</strong> for rate and movement quality. IMU packets are not used to diagnose frozen shoulder.</p>
     <p>Live mode never silently falls back to synthetic values. A live camera never receives a simulated IMU.</p>
     <p>Talk is LLM-in-the-loop from stored measurements and live metrics, not a FAQ. Claude never overrides BLOCK. ROM, reps and BLOCK safety continue if the LLM is down.</p>
-    <p>The Talk button starts a live call. RehabAI keeps listening and answering until you tap again or say you are done. Replies use Sarvam first for speed; ElevenLabs is skipped after a failed paid-voice attempt. Step 3 is an allowlisted in-page browser action (Playwright-style selectors). The model never receives the page or identifiers.</p>
+    <p>The Talk button starts a live call. PhysioBuDDY keeps listening and answering until you tap again or say you are done. Replies use Sarvam first for speed; ElevenLabs is skipped after a failed paid-voice attempt. Step 3 is an allowlisted in-page browser action (Playwright-style selectors). The model never receives the page or identifiers.</p>
     <p>The 3D coach is a procedural Three.js follow-along mannequin (rehab.ai motion + goniometer arc). It demonstrates the approved target for the selected exercise and mirrors the affected side. Live patient angle from telemetry is shown on the arc — the LLM never poses the mesh. Optional Mixamo <code>web/models/guide.glb</code> remains unsupported in this build; do not commit someone else's photogrammetry.</p>
   </div>` }, '#/settings');
 }

@@ -122,6 +122,7 @@
       open_settings: '#/settings',
       open_home: '#/app/home',
       open_history: '#/app/home',
+      start_assessment: '#/app/baseline',
     }[action];
     if (hash) location.hash = hash;
     if (action === 'confirm_tracking') document.getElementById('confirm')?.click();
@@ -220,7 +221,8 @@
       || data.safety === 'BLOCK'
       || data.action === 'open_home'
       || data.action === 'open_history'
-      || data.action === 'start_session';
+      || data.action === 'start_session'
+      || data.action === 'start_assessment';
   }
 
   async function conversationLoop(gen) {

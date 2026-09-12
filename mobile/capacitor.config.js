@@ -7,7 +7,7 @@ const useRemoteUi = String(process.env.REHABAI_REMOTE_UI || '').trim() === '1';
 
 const config = {
   appId: 'ai.rehab.consumer',
-  appName: 'RehabAI',
+  appName: 'PhysioBuDDY',
   webDir: 'www',
   android: {
     allowMixedContent: true,

@@ -27,10 +27,19 @@ def angle_between(a, b):
     return math.degrees(math.acos(max(-1, min(1, dot(unit(a), unit(b))))))
 
 
-def torso_basis(points):
+def torso_down(points):
+    """Torso long axis only.
+
+    Side-on views collapse the shoulder line, so the full basis is unavailable there.
+    """
     ls, rs = points['left_shoulder'].xyz, points['right_shoulder'].xyz
     lh, rh = points['left_hip'].xyz, points['right_hip'].xyz
-    down = unit(tuple((a+b-c-d)/2 for a, b, c, d in zip(lh, rh, ls, rs)))
+    return unit(tuple((a+b-c-d)/2 for a, b, c, d in zip(lh, rh, ls, rs)))
+
+
+def torso_basis(points):
+    ls, rs = points['left_shoulder'].xyz, points['right_shoulder'].xyz
+    down = torso_down(points)
     right = subtract(rs, ls)
     right = unit(subtract(right, tuple(dot(right, down)*v for v in down)))
     # Facing the camera, subject-right points image-left; forward points toward camera.
@@ -62,6 +71,25 @@ def calculate_flexion(points, side):
 
 def calculate_extension(points, side):
     return max(0., -calculate_flexion(points, side))
+
+
+def calculate_sagittal_elevation(points, side):
+    """Arm elevation read from the image plane of a side-facing 2D camera.
+
+    Forward and backward raises are indistinguishable here, and this is not an
+    isolated glenohumeral flexion angle. Unvalidated against goniometry.
+    """
+    return angle_between(arm_vector(points, side), torso_down(points))
+
+
+def sagittal_compensation(points, reference_down):
+    """Trunk tilt seen side-on. Lateral lean is not observable from this view."""
+    down = torso_down(points)
+    return {
+        'torso_lean': angle_between(down, reference_down),
+        'lateral_lean': None,
+        'forward_lean': None,
+    }
 
 
 def calculate_abduction(points, side):

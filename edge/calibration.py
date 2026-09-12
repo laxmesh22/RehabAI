@@ -2,19 +2,36 @@
 import math
 
 
+PHONE_PROFILES = ('phone_rgb_2d', 'phone_rgb_2d_sagittal')
+# Side-on, the far shoulder/elbow/hip are occluded and MediaPipe scores them low.
+# Requiring frontal confidence on all six would never let a valid side view start.
+SAGITTAL_REQUIRED = ('left_shoulder', 'right_shoulder', 'left_hip', 'right_hip')
+SAGITTAL_MIN_CONFIDENCE = .45
+
+
 def evaluate_calibration(snapshot, min_confidence=.65, min_distance=.8, max_distance=3.2):
     required = ('left_shoulder', 'right_shoulder', 'left_hip', 'right_hip', 'left_elbow', 'right_elbow')
     points = snapshot.get('points') or {}
     people = snapshot.get('people', 0)
     simulation = bool(snapshot.get('simulation'))
     capture_profile = snapshot.get('capture_profile') or ('simulation' if simulation else 'realsense_rgbd')
+    phone = capture_profile in PHONE_PROFILES
+    sagittal = capture_profile == 'phone_rgb_2d_sagittal'
     depth_required = bool(snapshot.get('depth_required', not simulation))
     framing_ok = snapshot.get('framing_ok')
-    pose_ok = people == 1 and all(name in points and points[name].confidence >= min_confidence for name in required)
+    if sagittal:
+        pose_ok = people == 1 and all(
+            name in points and points[name].confidence >= SAGITTAL_MIN_CONFIDENCE for name in SAGITTAL_REQUIRED
+        ) and any(
+            name in points and points[name].confidence >= SAGITTAL_MIN_CONFIDENCE
+            for name in ('left_elbow', 'right_elbow')
+        )
+    else:
+        pose_ok = people == 1 and all(name in points and points[name].confidence >= min_confidence for name in required)
     distance = snapshot.get('distance')
-    if distance is None and capture_profile != 'phone_rgb_2d' and 'left_shoulder' in points:
+    if distance is None and not phone and 'left_shoulder' in points:
         distance = abs(points['left_shoulder'].xyz[2])
-    distance_ok = bool(framing_ok) if capture_profile == 'phone_rgb_2d' else (
+    distance_ok = bool(framing_ok) if phone else (
         distance is not None and min_distance <= distance <= max_distance
     )
     if simulation:
@@ -69,9 +86,14 @@ def _message(simulation, camera_ok, depth_ok, depth_required, capture_profile, p
     if not pose_ok:
         return 'Upper-body landmarks are incomplete or low-confidence.'
     if not distance_ok:
+        if capture_profile == 'phone_rgb_2d_sagittal':
+            return 'Turn side-on to the camera until the whole body from shoulder to hip is visible.'
         if capture_profile == 'phone_rgb_2d':
             return 'Move the phone until shoulders, elbows and hips are fully visible.'
         return 'Stand on the marked distance marker and face the camera.'
+    if capture_profile == 'phone_rgb_2d_sagittal':
+        return ('Side-on phone tracking is ready. This reads arm elevation in the image plane, '
+                'is not an isolated flexion angle, and is unvalidated.')
     if capture_profile == 'phone_rgb_2d':
         return 'Phone RGB tracking is ready. Angles are 2D-derived, have no depth, and are unvalidated.'
     if imu_enabled and imu_ok and not imu_simulation:

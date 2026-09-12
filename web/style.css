@@ -353,6 +353,21 @@ td { padding: 12px 8px; border-bottom: 1px solid #eef3ee; }
   width: 100%; max-height: 180px; border-radius: 16px; display: block; object-fit: cover;
   background: #10241f; margin-bottom: 10px;
 }
+/* The overlay must mirror with the video, or the skeleton lands on the wrong side. */
+.phone-stage { position: relative; margin-bottom: 10px; line-height: 0; }
+.phone-stage .phone-preview { margin-bottom: 0; }
+.phone-stage .phone-overlay {
+  position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; border-radius: 16px;
+}
+.phone-mirror { transform: scaleX(-1); }
+.baseline-slide .baseline-steps {
+  margin: 0 0 14px; padding-left: 20px; display: grid; gap: 6px; text-align: left; color: var(--ink);
+}
+.baseline-slide .baseline-steps li { line-height: 1.45; }
+button.linkish {
+  background: none; border: 0; padding: 0; font: inherit; color: inherit;
+  text-decoration: underline; cursor: pointer;
+}
 .chat { display: flex; flex-direction: column; gap: 10px; max-height: 480px; overflow: auto; }
 .bubble { padding: 12px 14px; border-radius: 16px; background: var(--bg); }
 .bubble.me { background: var(--ink); color: #fff; }

@@ -25,7 +25,7 @@ EXERCISES = {
         'exercise_id': 'shoulder_flexion',
         'name': 'Shoulder flexion',
         'avatar_demo': 'flexion',
-        'instructions': 'Turn slightly so the affected side is visible. Raise the arm forward, then lower it slowly.',
+        'instructions': 'Turn so the affected side faces the camera. Raise the arm forward, then lower it slowly.',
         'target_joint': 'shoulder',
         'movement': 'flexion',
         'target_range': 120,
@@ -35,6 +35,8 @@ EXERCISES = {
         'completion_condition': 'return to the lowered start position',
         'safety_conditions': ['stop if pain increases sharply', 'avoid leaning backward'],
         'tracking_supported': True,
+        # A single 2D camera reads a forward raise only from the side.
+        'phone_plane': 'sagittal',
         'rest_angle': 20,
         'raise_angle': 30,
     },
@@ -143,6 +145,13 @@ EXERCISES = {
 }
 
 
+# Baseline movement -> the exercise used to measure it before rehab starts.
+BASELINE_EXERCISES = {
+    'abduction': 'shoulder_abduction',
+    'flexion': 'shoulder_flexion',
+}
+
+
 def get_exercise(exercise_id):
     exercise = EXERCISES.get(exercise_id)
     if not exercise:
@@ -153,11 +162,18 @@ def get_exercise(exercise_id):
     row.setdefault('raise_angle', 30)
     row.setdefault('start_position', 'arm relaxed')
     row.setdefault('peak_condition', 'comfortable session target')
+    row.setdefault('phone_plane', 'frontal')
     return row
 
 
+def phone_trackable(exercise_id) -> bool:
+    """A single phone camera reads frontal-plane raises, or sagittal ones side-on."""
+    row = get_exercise(exercise_id)
+    return row['movement'] in ('abduction', 'elevation') or row['phone_plane'] == 'sagittal'
+
+
 def approved_library():
-    return [dict(item) for item in EXERCISES.values()]
+    return [get_exercise(key) for key in EXERCISES]
 
 
 def avatar_demo_for(exercise_id):

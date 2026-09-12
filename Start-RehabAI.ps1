@@ -116,7 +116,7 @@ if ($python -eq 'python' -and -not (Get-Command python -ErrorAction SilentlyCont
 
 Ensure-PoseSidecar
 
-Write-Host "RehabAI hospital studio listening on http://${ListenAddress}:${Port}"
+Write-Host "PhysioBuDDY hospital studio listening on http://${ListenAddress}:${Port}"
 if ($Phone) { Write-Host 'Phone mode: open the PC LAN IP on the same trusted Wi-Fi network.' }
 Write-Host 'Original patient station -> python -m backend.server  (port 8765)'
 & $python -m uvicorn backend.main:app --host $ListenAddress --port $Port --no-access-log --log-level warning

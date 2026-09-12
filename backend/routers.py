@@ -23,7 +23,7 @@ from backend.database.models import (
 )
 from backend.database.session import get_db
 from backend.services.live_hub import HUB, PhoneFrameRateLimit
-from backend.services.persist import persist_finished_session
+from backend.services.persist import is_valid_rom, persist_finished_session
 from edge.imu.device import describe_imu
 from edge.overlay import opencv_available
 from agent.orchestrator import run_supervisor
@@ -35,7 +35,7 @@ from agent.tools.clinical import (
     calculate_patient_progress, get_approved_exercise_library, get_pain_history, get_rom_history,
     get_compensation_events, get_session_history,
 )
-from edge.exercises.library import get_exercise
+from edge.exercises.library import BASELINE_EXERCISES, get_exercise, phone_trackable
 from backend.intake import (
     INTAKE_FIELDS, apply_confirmed_value, empty_intake, merge_finish_intake,
     missing_intake_fields, scores_from_intake, script_payload,
@@ -46,8 +46,9 @@ from backend.voice import (
 from agent.live_voice import live_reply, sanitize_context
 from agent.consumer_voice import consumer_reply, greeting_prompt
 from backend.memory import (
-    append_report, load_memory, merge_session_into_memory, report_phase_complete,
-    save_memory, skip_report_phase, skip_talk_phase,
+    append_report, baseline_complete, load_memory, merge_session_into_memory,
+    next_baseline_movement, normalize_baseline, record_baseline_measurement,
+    report_phase_complete, save_memory, skip_baseline_phase, skip_report_phase, skip_talk_phase,
 )
 from backend.ocr import run_report_ocr
 from agent.retrieval import patient_memory_for_agent
@@ -586,8 +587,11 @@ def start_session(body: SessionStartBody, user: User = Depends(current_user), db
         source = 'phone'
     elif capture == 'auto' and MEASUREMENT_SOURCE == 'live' and not POSE_MODEL:
         raise HTTPException(400, 'Live capture is configured but REHABAI_POSE_MODEL is unavailable')
-    if source == 'phone' and spec.get('movement') not in ('abduction', 'elevation'):
-        raise HTTPException(400, 'Phone RGB currently supports frontal-plane abduction/elevation only')
+    if source == 'phone' and not phone_trackable(body.exercise_id):
+        raise HTTPException(
+            400,
+            'Phone RGB supports frontal-plane abduction/elevation, or a sagittal exercise measured side-on',
+        )
     plan = db.scalars(select(RehabPlan).where(RehabPlan.patient_id == patient.id,
                                              RehabPlan.status.in_(('approved', 'active')))).first()
     if user.role == 'PATIENT' and body.kind == 'rehab':
@@ -742,6 +746,8 @@ async def voice_agent(
             pending_value=pending_value,
             awaiting_confirm=bool(ctx.get('awaiting_confirm')),
             intake_field=str(ctx['intake_field']) if ctx.get('intake_field') else None,
+            # The call-opening turn carries no audio; a silent mid-call turn does.
+            opening=audio is None and not (text or '').strip(),
         )
         parsed = talk.get('parsed')
     else:
@@ -953,14 +959,18 @@ def consumer_me(user: User = Depends(current_user), db: Session = Depends(get_db
             age = max(0, utcnow().year - year)
         except (TypeError, ValueError):
             age = None
-    home_ready = bool(intake_done and report_done)
+    baseline_done = baseline_complete(mem)
+    # The camera baseline is measured before the dashboard unlocks.
+    home_ready = bool(intake_done and report_done and baseline_done)
     phase = (
         'dashboard' if home_ready else
+        'baseline' if (intake_done and report_done) else
         'report' if intake_done else
         'questionnaire' if profile_done else
         'profile'
     )
     return {
+        'baseline': _baseline_state(patient.id),
         'patient_id': patient.id,
         'is_demo': bool(patient.is_demo),
         'affected_side': profile.get('affected_side') or patient.affected_side,
@@ -1092,6 +1102,25 @@ def consumer_talk_skip(user: User = Depends(current_user), db: Session = Depends
     }
 
 
+@router.post('/consumer/baseline-skip')
+def consumer_baseline_skip(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Open the dashboard without a camera baseline. No range is recorded."""
+    if user.role != 'PATIENT':
+        raise HTTPException(403, 'Only the signed-in patient can skip the baseline')
+    patient = db.scalars(select(Patient).where(Patient.user_id == user.id)).first()
+    if patient is None:
+        raise HTTPException(404, 'No patient record for this account')
+    skip_baseline_phase(patient.id)
+    audit(db, user, 'consumer_baseline_skip', 'patient', patient.id)
+    db.commit()
+    return {
+        'ok': True,
+        'action': 'open_home',
+        'baseline': _baseline_state(patient.id),
+        'spoken': 'Skipping the camera measurement. No range was recorded.',
+    }
+
+
 @router.post('/consumer/retalk')
 def consumer_retalk(user: User = Depends(current_user), db: Session = Depends(get_db)):
     """Re-open clinical Talk without wiping the spoken profile name/age/side."""
@@ -1104,6 +1133,7 @@ def consumer_retalk(user: User = Depends(current_user), db: Session = Depends(ge
     mem['intake'] = empty_intake()
     mem['report_phase'] = 'needed'
     mem['talk_skipped'] = False
+    # Stored baseline measurements survive a re-talk; only the spoken answers reset.
     save_memory(patient.id, mem)
     audit(db, user, 'consumer_retalk', 'patient', patient.id)
     db.commit()
@@ -1187,6 +1217,11 @@ def finish_session(session_id: str, body: SessionFinishBody, user: User = Depend
     summary_for_memory['pain_after'] = body.pain_after
     movement = 'flexion' if 'flexion' in (row.exercise_id or '') else 'abduction'
     merge_session_into_memory(patient.id, summary_for_memory, row.id, movement)
+    if row.kind == 'assessment':
+        # Only a real measurement becomes a baseline. A session where tracking never
+        # locked on has a peak of 0, and storing that would invent a range.
+        measured = row.peak_angle if is_valid_rom(row, summary) else None
+        record_baseline_measurement(patient.id, movement, measured, row.id, source=row.source)
     insight = record_session_insight(
         patient.id,
         summary_for_memory,
@@ -1197,7 +1232,21 @@ def finish_session(session_id: str, body: SessionFinishBody, user: User = Depend
     audit(db, user, 'finish_session', 'session', row.id, {'reps': row.reps, 'source': row.source})
     db.flush()
     return {'session': _session(row), 'summary': summary, 'assessment_id': None if assessment is None else assessment.id,
-            'sample_count': len(history), 'insight': insight}
+            'sample_count': len(history), 'insight': insight,
+            'baseline': _baseline_state(patient.id)}
+
+
+def _baseline_state(patient_id: str) -> dict:
+    mem = load_memory(patient_id)
+    baseline = normalize_baseline(mem.get('baseline'))
+    done = baseline_complete(mem)
+    next_movement = None if done else next_baseline_movement(baseline)
+    return {
+        **baseline,
+        'complete': done,
+        'next_movement': next_movement,
+        'next_exercise_id': None if next_movement is None else BASELINE_EXERCISES[next_movement],
+    }
 
 
 @router.get('/exercises')

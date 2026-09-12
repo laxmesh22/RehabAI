@@ -25,6 +25,19 @@ def compact_sample(row):
     }
 
 
+def is_valid_rom(session_row, summary) -> bool:
+    """Did this session actually measure a range?
+
+    A session where tracking never locked on still has a peak of 0. That is not a
+    measurement and must not be stored as one.
+    """
+    return bool(
+        session_row.coverage is not None and session_row.coverage >= 50
+        and (session_row.peak_angle or 0) > 0
+        and summary['safety']['level'] not in ('PAUSE', 'BLOCK')
+    )
+
+
 def persist_finished_session(db, session_row, patient, summary, history, finish_body, user):
     session_row.ended_at = utcnow()
     session_row.reps = summary['reps']
@@ -60,11 +73,7 @@ def persist_finished_session(db, session_row, patient, summary, history, finish_
         db.add(PainScore(id=new_id('PAIN-'), patient_id=patient.id, session_id=session_row.id,
                          rest=rest_pain, movement=movement_pain, context='session'))
     movement = _movement(session_row.exercise_id)
-    valid_rom = (
-        session_row.coverage is not None and session_row.coverage >= 50
-        and (session_row.peak_angle or 0) > 0
-        and summary['safety']['level'] not in ('PAUSE', 'BLOCK')
-    )
+    valid_rom = is_valid_rom(session_row, summary)
     wrote_rom = False
     if valid_rom:
         db.add(ROMMeasurement(id=new_id('ROM-'), patient_id=patient.id, session_id=session_row.id, movement=movement,

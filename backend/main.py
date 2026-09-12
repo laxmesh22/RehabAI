@@ -29,7 +29,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title='RehabAI', version='0.2.0',
+app = FastAPI(title='PhysioBuDDY', version='0.2.0',
               description='AI-assisted shoulder rehabilitation platform (prototype)',
               lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=list(ALLOWED_ORIGINS),
@@ -48,7 +48,7 @@ def patient_station():
     index = DIST / 'index.html'
     if index.is_file():
         return FileResponse(index)
-    return HTMLResponse('<h1>RehabAI station bundle is not built.</h1><p>Open / for the studio UI.</p>', status_code=404)
+    return HTMLResponse('<h1>PhysioBuDDY station bundle is not built.</h1><p>Open / for the studio UI.</p>', status_code=404)
 
 
 if DIST.exists():
@@ -60,7 +60,7 @@ def spa_index():
     index = WEB / 'index.html'
     if index.exists():
         return FileResponse(index)
-    return HTMLResponse('<h1>RehabAI API</h1><p>Open /docs or start the frontend.</p>')
+    return HTMLResponse('<h1>PhysioBuDDY API</h1><p>Open /docs or start the frontend.</p>')
 
 
 if WEB.exists():

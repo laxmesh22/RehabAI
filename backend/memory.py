@@ -14,12 +14,47 @@ def memory_path(patient_id: str) -> Path:
     return STORAGE_DIR / 'patients' / patient_id / 'memory.json'
 
 
+# Measured before any rehab session, in this order.
+BASELINE_MOVEMENTS = ('abduction', 'flexion')
+
+
+def empty_baseline() -> dict[str, Any]:
+    return {
+        'phase': 'needed',  # needed | done | skipped
+        'abduction_deg': None,
+        'flexion_deg': None,
+        'source': None,
+        'measured_at': None,
+        'session_ids': [],
+    }
+
+
+def normalize_baseline(raw: Any) -> dict[str, Any]:
+    row = empty_baseline()
+    if not isinstance(raw, dict):
+        return row
+    phase = raw.get('phase')
+    row['phase'] = phase if phase in ('needed', 'done', 'skipped') else 'needed'
+    for key in ('abduction_deg', 'flexion_deg'):
+        value = raw.get(key)
+        try:
+            row[key] = None if value is None else round(float(value), 1)
+        except (TypeError, ValueError):
+            row[key] = None
+    row['source'] = raw.get('source') if isinstance(raw.get('source'), str) else None
+    row['measured_at'] = raw.get('measured_at') if isinstance(raw.get('measured_at'), str) else None
+    ids = raw.get('session_ids')
+    row['session_ids'] = [str(item) for item in ids][-6:] if isinstance(ids, list) else []
+    return row
+
+
 def default_memory() -> dict[str, Any]:
     return {
         'version': 2,
         'profile': empty_profile(),
         'intake': empty_intake(),
         'report_phase': 'needed',  # needed | done | skipped
+        'baseline': empty_baseline(),
         'talk_skipped': False,
         'reports': [],
         'last_peak_abduction': None,
@@ -62,6 +97,7 @@ def load_memory(patient_id: str) -> dict[str, Any]:
     base['reports'] = reports if isinstance(reports, list) else []
     phase = row.get('report_phase')
     base['report_phase'] = phase if phase in ('needed', 'done', 'skipped') else 'needed'
+    base['baseline'] = normalize_baseline(row.get('baseline'))
     return base
 
 
@@ -84,6 +120,7 @@ def save_memory(patient_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         row['rag_summary'] = default_memory()['rag_summary']
     if row.get('report_phase') not in ('needed', 'done', 'skipped'):
         row['report_phase'] = 'needed'
+    row['baseline'] = normalize_baseline(row.get('baseline'))
     from backend.database.models import utcnow
     row['updated_at'] = utcnow().isoformat() + 'Z'
     path.write_text(json.dumps(row, indent=2, ensure_ascii=False), encoding='utf-8')
@@ -118,8 +155,64 @@ def skip_talk_phase(patient_id: str) -> dict[str, Any]:
     intake['source'] = 'talk_skip'
     row['intake'] = intake
     row['report_phase'] = 'skipped'
+    baseline = normalize_baseline(row.get('baseline'))
+    baseline['phase'] = 'skipped'
+    row['baseline'] = baseline
     row['talk_skipped'] = True
     return save_memory(patient_id, row)
+
+
+def skip_baseline_phase(patient_id: str) -> dict[str, Any]:
+    """Let a patient reach the dashboard without a camera baseline. Measures nothing."""
+    row = load_memory(patient_id)
+    baseline = normalize_baseline(row.get('baseline'))
+    baseline['phase'] = 'skipped'
+    row['baseline'] = baseline
+    return save_memory(patient_id, row)
+
+
+def record_baseline_measurement(
+    patient_id: str,
+    movement: str,
+    peak: Any,
+    session_id: str,
+    source: str | None = None,
+) -> dict[str, Any]:
+    """Store one measured baseline movement. A missing peak is never filled in."""
+    row = load_memory(patient_id)
+    baseline = normalize_baseline(row.get('baseline'))
+    key = 'flexion_deg' if movement == 'flexion' else 'abduction_deg'
+    try:
+        value = None if peak is None else round(float(peak), 1)
+    except (TypeError, ValueError):
+        value = None
+    if value is not None:
+        baseline[key] = value
+        if source:
+            baseline['source'] = source
+        from backend.database.models import utcnow
+        baseline['measured_at'] = utcnow().isoformat() + 'Z'
+        ids = [item for item in baseline['session_ids'] if item != session_id]
+        ids.append(session_id)
+        baseline['session_ids'] = ids[-6:]
+    if baseline['phase'] != 'skipped' and next_baseline_movement(baseline) is None:
+        baseline['phase'] = 'done'
+    row['baseline'] = baseline
+    return save_memory(patient_id, row)
+
+
+def next_baseline_movement(baseline: dict[str, Any] | None) -> str | None:
+    """Which baseline movement still has no measured value."""
+    row = normalize_baseline(baseline)
+    for movement in BASELINE_MOVEMENTS:
+        if row['{}_deg'.format(movement)] is None:
+            return movement
+    return None
+
+
+def baseline_complete(memory: dict[str, Any] | None) -> bool:
+    baseline = normalize_baseline((memory or {}).get('baseline'))
+    return baseline['phase'] in ('done', 'skipped') or next_baseline_movement(baseline) is None
 
 
 def report_phase_complete(memory: dict[str, Any] | None) -> bool:

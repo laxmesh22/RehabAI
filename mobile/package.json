@@ -2,7 +2,7 @@
   "name": "rehabai-consumer",
   "version": "0.1.0",
   "private": true,
-  "description": "RehabAI consumer APK shell (Capacitor). Talk-first patient app.",
+  "description": "PhysioBuDDY consumer APK shell (Capacitor). Talk-first patient app.",
   "scripts": {
     "sync-web": "node scripts/sync-web.js",
     "cap:sync": "npm run sync-web && npx cap sync android",

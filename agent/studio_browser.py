@@ -16,6 +16,7 @@ STUDIO_ACTIONS = (
     'open_history',
     'confirm_tracking',
     'start_session',
+    'start_assessment',
 )
 
 # Playwright-style selectors used by the in-page executor (and by an optional headless runner).
@@ -26,6 +27,7 @@ ACTION_SELECTORS = {
     'open_history': {'hash': '#/app/home', 'scroll': '#dash-history'},
     'confirm_tracking': {'click': '#confirm'},
     'start_session': {'click': '#go'},
+    'start_assessment': {'hash': '#/app/baseline'},
 }
 
 ACTION_PHRASES = {
@@ -35,6 +37,8 @@ ACTION_PHRASES = {
     'open_history': ('show history', 'past sessions', 'my sessions', 'session history', 'previous sessions'),
     'confirm_tracking': ('confirm tracking', 'start tracking', 'tracking looks good', 'confirm and start'),
     'start_session': ('start session', 'start rehab', 'begin session', 'start the session', 'record session'),
+    'start_assessment': ('start assessment', 'measure me', 'measure my shoulder', 'start the camera',
+                         'open the camera', 'check my range', 'measure my range'),
 }
 
 

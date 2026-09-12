@@ -53,7 +53,7 @@ The original station at port 8765 still uses `backend/engine.py` and a schematic
 
 The consumer UI captures front-camera RGB at a bounded rate and sends authenticated JPEG frames to `POST /api/sessions/{id}/phone-frame`. The backend rejects non-JPEG, oversized, over-resolution, and too-frequent frames. Frames are decoded for inference and discarded; telemetry stores landmarks, confidence, source, model version, repetitions and safety events.
 
-Phone RGB has no RealSense depth. Calibration uses upper-body framing instead of fabricated metres, and telemetry is labelled `phone_rgb_2d` / `monocular_2d_projection`. Current phone tracking is restricted to frontal-plane abduction/elevation. Phone accuracy, camera placement, movement plane and device variation require separate validation before clinical use.
+Phone RGB has no RealSense depth. Calibration uses upper-body framing instead of fabricated metres, and telemetry is labelled `phone_rgb_2d` / `monocular_2d_projection`. Frontal-plane abduction/elevation is measured face-on. A forward raise has no projection in a frontal 2D view, so sagittal exercises ask the patient to turn side-on and are labelled `phone_rgb_2d_sagittal`; that reads arm elevation in the image plane, is not an isolated glenohumeral flexion angle, and cannot separate a forward raise from a backward one. Phone accuracy, camera placement, movement plane and device variation require separate validation before clinical use.
 
 ## IMU packet
 

@@ -46,7 +46,7 @@ class LiveHub:
                 actor = SimulatedPatient(side, movement)
             elif source == 'phone':
                 from edge.phone_capture import PhonePoseEstimator
-                phone_estimator = PhonePoseEstimator()
+                phone_estimator = PhonePoseEstimator(plane=pipeline.plane)
             else:
                 from edge.live_source import LiveCapture
                 capture = LiveCapture(POSE_MODEL, POSE_KIND, POSE_DEVICE)

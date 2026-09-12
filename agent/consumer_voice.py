@@ -8,8 +8,8 @@ from typing import Any
 from backend.config import ANTHROPIC_API_KEY
 from backend.intake import INTAKE_FIELDS, apply_confirmed_value, empty_intake
 from backend.memory import (
-    intake_complete, load_memory, report_phase_complete,
-    save_memory, skip_report_phase,
+    baseline_complete, intake_complete, load_memory, next_baseline_movement,
+    report_phase_complete, save_memory, skip_report_phase,
 )
 from backend.profile import (
     PROFILE_FIELDS, apply_profile_to_patient, apply_profile_value, display_first_name,
@@ -68,6 +68,8 @@ def _phase(profile, intake, memory) -> str:
         return 'questionnaire'
     if not report_phase_complete(memory):
         return 'report'
+    if not baseline_complete(memory):
+        return 'baseline'
     return 'dashboard'
 
 
@@ -111,6 +113,7 @@ async def consumer_reply(
     pending_value: int | None = None,
     awaiting_confirm: bool = False,
     intake_field: str | None = None,
+    opening: bool = False,
 ) -> dict[str, Any]:
     spoken_language = language if language in ('en-IN', 'hi-IN') else 'en-IN'
     hindi = spoken_language == 'hi-IN'
@@ -143,7 +146,7 @@ async def consumer_reply(
         memory_slice = patient_memory_for_agent(db, patient_id) if db is not None else sanitize_memory_slice(memory)
 
     nav = match_action(text)
-    if nav not in ('start_session', 'open_history', 'open_home'):
+    if nav not in ('start_session', 'start_assessment', 'open_history', 'open_home'):
         nav = 'none'
 
     saved = extract_volunteered(text, profile, intake)
@@ -174,7 +177,12 @@ async def consumer_reply(
         memory_slice = patient_memory_for_agent(db, patient_id) if db is not None else sanitize_memory_slice(memory)
         first_name = display_first_name(profile, '')
 
-    missing = missing_goals(profile, intake, memory.get('report_phase') or 'needed')
+    baseline_movement = None
+    if intake_complete(intake) and report_phase_complete(memory) and not baseline_complete(memory):
+        baseline_movement = next_baseline_movement(memory.get('baseline'))
+    missing = missing_goals(
+        profile, intake, memory.get('report_phase') or 'needed', baseline_movement,
+    )
     phase = _phase(profile, intake, memory)
     plan = None
     if CONSUMER_CLAUDE and ANTHROPIC_API_KEY:
@@ -217,7 +225,7 @@ async def consumer_reply(
         if plan and plan.get('action') == 'skip_report':
             skip_report_phase(patient_id)
             plan['action'] = 'open_home'
-        if plan and plan.get('action') == 'start_session' and not intake_complete(intake):
+        if plan and plan.get('action') in ('start_session', 'start_assessment') and not intake_complete(intake):
             plan['action'] = 'none'
         if plan and plan.get('action') == 'await_report' and missing:
             plan['action'] = 'none'
@@ -240,19 +248,33 @@ async def consumer_reply(
     if not spoken:
         spoken = fallback_spoken(
             spoken_language, missing=missing, saved=saved, first_name=first_name,
+            baseline_movement=baseline_movement,
         )
     action = (plan or {}).get('action') or 'none'
+    memory_now = load_memory(patient_id)
+    needs_baseline = (
+        intake_complete(intake)
+        and report_phase_complete(memory_now)
+        and not baseline_complete(memory_now)
+    )
     if skipped_report and action in ('none', 'skip_report'):
         action = 'open_home'
     if (
         action == 'none'
         and nav != 'none'
         and intake_complete(intake)
-        and report_phase_complete(load_memory(patient_id))
+        and report_phase_complete(memory_now)
     ):
         action = nav
-    if action == 'start_session' and not intake_complete(intake):
+    if action in ('start_session', 'start_assessment') and not intake_complete(intake):
         action = 'none'
+    # The camera baseline is measured before the dashboard or any rehab session.
+    if needs_baseline and action in ('open_home', 'open_history', 'start_session'):
+        action = 'start_assessment'
+    if needs_baseline and action == 'none' and opening:
+        action = 'start_assessment'
+    if action == 'start_assessment' and not needs_baseline:
+        action = 'open_home' if baseline_complete(memory_now) else 'none'
     if phase == 'report' and action == 'none' and not text:
         action = 'await_report'
     engine = (plan or {}).get('engine') or 'consumer-autonomous'

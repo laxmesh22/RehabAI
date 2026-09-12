@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">RehabAI</string>
-    <string name="title_activity_main">RehabAI</string>
+    <string name="app_name">PhysioBuDDY</string>
+    <string name="title_activity_main">PhysioBuDDY</string>
     <string name="package_name">ai.rehab.consumer</string>
     <string name="custom_url_scheme">ai.rehab.consumer</string>
 </resources>
