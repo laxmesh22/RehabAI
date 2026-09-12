@@ -1,3 +1,5 @@
+from collections import deque
+
 from edge.contracts import Joint3D
 
 
@@ -27,3 +29,22 @@ class SkeletonEMA:
         # Missing joints are dropped immediately, not carried through occlusion.
         self.previous, self.timestamp = result, timestamp
         return result
+
+
+class AngleMovingAverage:
+    """Short window MA for phone ROM (vendor-style); does not invent angles."""
+
+    def __init__(self, window: int = 5):
+        if window < 1:
+            raise ValueError('window must be >= 1')
+        self.window = int(window)
+        self._buf: deque[float] = deque(maxlen=self.window)
+
+    def reset(self):
+        self._buf.clear()
+
+    def update(self, angle: float | None) -> float | None:
+        if angle is None:
+            return None
+        self._buf.append(float(angle))
+        return sum(self._buf) / len(self._buf)

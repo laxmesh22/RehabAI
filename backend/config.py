@@ -33,8 +33,14 @@ _use_os_certificate_store()
 
 
 def _sarvam_speaker(raw):
+    """Normalize Sarvam Bulbul speaker ids. Product voice is Subh (API id: shubh)."""
     name = (raw or 'shubh').strip().lower()
-    return {'subh': 'shubh', 'shub': 'shubh'}.get(name, name) or 'shubh'
+    return {
+        'subh': 'shubh',
+        'shub': 'shubh',
+        'shubh': 'shubh',
+        'sub': 'shubh',
+    }.get(name, name) or 'shubh'
 
 
 DATA_DIR = Path(os.environ.get('REHABAI_DATA', ROOT / 'data'))
@@ -59,22 +65,29 @@ ANTHROPIC_BASE_URL = os.environ.get('ANTHROPIC_BASE_URL', 'https://api.anthropic
 ANTHROPIC_MODEL = os.environ.get('ANTHROPIC_MODEL', 'claude-sonnet-5')
 ELEVENLABS_API_KEY = os.environ.get('ELEVENLABS_API_KEY', '')
 ELEVENLABS_BASE_URL = os.environ.get('ELEVENLABS_BASE_URL', 'https://api.elevenlabs.io').rstrip('/')
-ELEVENLABS_VOICE_ID = os.environ.get('ELEVENLABS_VOICE_ID', '21m00Tcm4TlvDq8ikWAM')
+ELEVENLABS_VOICE_ID = os.environ.get('ELEVENLABS_VOICE_ID', 'JBFqnCBsd6RMkjVDRZzb')  # George
 ELEVENLABS_TTS_MODEL = os.environ.get('ELEVENLABS_TTS_MODEL', 'eleven_multilingual_v2')
 ELEVENLABS_STT_MODEL = os.environ.get('ELEVENLABS_STT_MODEL', 'scribe_v1')
-VOICE_TTS = os.environ.get('REHABAI_TTS', 'sarvam').strip().lower() or 'sarvam'
+VOICE_TTS = os.environ.get('REHABAI_TTS', 'elevenlabs').strip().lower() or 'elevenlabs'
 VOICE_STT = os.environ.get('REHABAI_STT', 'auto').strip().lower() or 'auto'
 VOICE_TIMEOUT_S = float(os.environ.get('REHABAI_VOICE_TIMEOUT_S', '20'))
-MEASUREMENT_SOURCE = os.environ.get('REHABAI_SOURCE', 'simulation')  # simulation | live
+MEASUREMENT_SOURCE = os.environ.get('REHABAI_SOURCE', 'simulation').strip().lower()  # simulation | live
+if MEASUREMENT_SOURCE not in ('simulation', 'live'):
+    raise RuntimeError('REHABAI_SOURCE must be simulation or live; phone capture is selected per session')
 POSE_MODEL = os.environ.get('REHABAI_POSE_MODEL', '')
-POSE_KIND = os.environ.get('REHABAI_POSE_KIND', 'mediapipe')
+# opencv = Shoulder Tracker stack (MediaPipe Solutions + OpenCV; no model file).
+# mediapipe / yolo require REHABAI_POSE_MODEL (.task / .pt).
+POSE_KIND = os.environ.get('REHABAI_POSE_KIND', 'opencv')
 POSE_DEVICE = os.environ.get('REHABAI_POSE_DEVICE', 'cpu')
 PHONE_INFERENCE_URL = os.environ.get('REHABAI_PHONE_INFERENCE_URL', '').strip().rstrip('/')
 PHONE_INFERENCE_API_KEY = os.environ.get('REHABAI_PHONE_INFERENCE_API_KEY', '')
 PHONE_INFERENCE_TIMEOUT_S = float(os.environ.get('REHABAI_PHONE_INFERENCE_TIMEOUT_S', '8'))
 PHONE_FRAME_MAX_BYTES = int(os.environ.get('REHABAI_PHONE_FRAME_MAX_BYTES', '1500000'))
 PHONE_FRAME_MAX_PIXELS = int(os.environ.get('REHABAI_PHONE_FRAME_MAX_PIXELS', str(1920 * 1080)))
-PHONE_FRAME_MIN_INTERVAL_S = float(os.environ.get('REHABAI_PHONE_FRAME_MIN_INTERVAL_S', '0.18'))
+# ~8 FPS ceiling; client upload interval should stay near this for smoother angle MA.
+PHONE_FRAME_MIN_INTERVAL_S = float(os.environ.get('REHABAI_PHONE_FRAME_MIN_INTERVAL_S', '0.12'))
+# OpenCV MediaPipe: 0=fast, 1=balanced (default), 2=accurate/slow. See estimator env vars.
+OPENCV_POSE_COMPLEXITY = int(os.environ.get('REHABAI_OPENCV_POSE_COMPLEXITY', '1'))
 DEMO_PASSWORD = os.environ.get('REHABAI_DEMO_PASSWORD', 'rehabai-demo')
 IMU_TRANSPORT = os.environ.get('REHABAI_IMU_TRANSPORT', 'auto')  # auto | simulation | udp | serial | off
 IMU_UDP_HOST = os.environ.get('REHABAI_IMU_UDP_HOST', '127.0.0.1')
@@ -85,3 +98,11 @@ IMU_REQUIRED = os.environ.get('REHABAI_IMU_REQUIRED', '0').lower() in ('1', 'tru
 IMU_PLACEMENTS = tuple(
     part.strip() for part in os.environ.get('REHABAI_IMU_PLACEMENTS', 'arm').split(',') if part.strip()
 ) or ('arm',)
+ALLOWED_ORIGINS = tuple(
+    part.strip().rstrip('/') for part in os.environ.get(
+        'REHABAI_ALLOWED_ORIGINS',
+        'http://127.0.0.1:3000,http://localhost:3000,http://127.0.0.1:8000,http://localhost:8000,'
+        'http://10.0.2.2:8000,capacitor://localhost,https://localhost,'
+        'https://rehabai-api-production.up.railway.app',
+    ).split(',') if part.strip()
+)

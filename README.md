@@ -36,30 +36,29 @@ notepad .env
 
 The patient profile has **Export JSON** and **Export Excel** actions. Both exports are access controlled, audit logged, and retain `simulation`, `live`, and `demo / synthetic` labels. See [the voice intake workflow](docs/VOICE_INTAKE_WORKFLOW.md) for the provider data boundary and failure behavior.
 
-Demo accounts (password `rehabai-demo`):
+## Staff accounts (password from `REHABAI_DEMO_PASSWORD`, default `rehabai-demo`)
 
 | Role | Email |
 |---|---|
 | Physiotherapist | `priya.mehta@hospital.local` |
-| Patient | `ananya.sharma@demo.local` |
 | Doctor | `dr.rao@hospital.local` |
 | Admin | `admin@hospital.local` |
 
-Demo patient **Ananya Sharma (P102)** is labelled demo/synthetic. Baseline abduction 72°, flexion 94°, pain 7/10; later abduction 103°, flexion 121°, pain 4/10. Those values are seed data, not a live capture.
+No fabricated patient profile is seeded. Consumer apps call `POST /api/consumer/bootstrap` for an empty patient account; clinicians use **Patients → Register patient**. Simulation sessions stay labelled synthetic when selected.
 
-### Suggested live demo
+### Suggested clinic walkthrough
 
-1. Sign in as Priya Mehta.
-2. Open Ananya Sharma, or **Register patient** first.
+1. Sign in as Priya Mehta (staff password from env / default above).
+2. **Register patient** (empty record — no seed ROM or pain).
 3. Start assessment.
 4. Complete and confirm the six pain/function questions (Speak or tap). Measurement is locked until this is done.
-5. Wait until Pose and Distance read OK (Camera/Depth stay **Simulation**).
+5. Wait until Pose and Distance read OK (Camera/Depth stay **Simulation** when that capture mode is selected).
 6. Confirm tracking.
 7. Watch abduction climb. The **3D guide** (lime arm) is what to copy; it is not the patient. Cues are spoken when they change.
 8. Click **Lean sideways** — coaching should say to keep the trunk upright, and the guide trunk stays vertical.
 9. Return to Normal, complete a repetition.
 10. Stop & save, enter pain after, then read the stored session recap.
-11. Open Progress, then ask the AI: `Compare this assessment with the previous session.`
+11. Open Progress, then ask the AI: `Compare this assessment with the previous session.` (only after two stored assessments exist).
 12. Export the patient record as JSON or Excel and open Reports.
 
 The original loopback patient station still works:
@@ -97,9 +96,9 @@ Optional edge packages: `pip install -r requirements-edge.txt` after matching Je
 
 ### Phone RGB capture
 
-OpenCV is an image-processing library, not the trainable model. The phone sends short-lived JPEG frames; a MediaPipe or YOLO pose model runs either inside FastAPI or on the separate GPU pose service. Only normalized landmarks and session metrics are retained by default.
+Default backend is **`REHABAI_POSE_KIND=opencv`**: OpenCV decode + MediaPipe Solutions Pose (Shoulder Tracker stack). No `.task` / `.pt` file is required; the model ships inside the `mediapipe` wheel (Python **3.12**). Phone measurements stay labelled `phone_rgb_2d` (no depth).
 
-Local model on the FastAPI host:
+Optional Tasks/YOLO model on the FastAPI host:
 
 ```powershell
 $env:REHABAI_POSE_MODEL='C:\models\pose_landmarker.task'
@@ -123,7 +122,7 @@ $env:REHABAI_PHONE_INFERENCE_API_KEY='use-the-same-internal-key'
 .\Start-RehabAI.ps1 -Phone
 ```
 
-Phone measurements are explicitly labelled `phone_rgb_2d`: there is no measured depth or distance. This stage supports frontal-plane abduction/elevation only. Train from an annotated, subject-disjoint dataset with `scripts/train_pose.py`; its output remains unvalidated until held-out evaluation and physical comparison against a reference measurement are completed.
+This stage supports frontal-plane abduction/elevation only. Train from an annotated, subject-disjoint dataset with `scripts/train_pose.py`; its output remains unvalidated until held-out evaluation and physical comparison against a reference measurement are completed.
 
 If the GPU/LLM server is down, ROM, reps, compensation and safety still run. Set `LLM_BASE_URL` only when a local OpenAI-compatible endpoint exists.
 

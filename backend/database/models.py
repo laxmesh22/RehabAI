@@ -29,6 +29,7 @@ class User(Base):
     role = mapped_column(String, nullable=False)  # ADMIN | DOCTOR | PHYSIOTHERAPIST | PATIENT
     is_active = mapped_column(Boolean, default=True)
     created_at = mapped_column(DateTime, default=utcnow)
+    last_login_at = mapped_column(DateTime, nullable=True)
 
 
 class Patient(Base):

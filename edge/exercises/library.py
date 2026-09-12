@@ -11,7 +11,7 @@ EXERCISES = {
         'instructions': 'Stand facing the camera. Raise the affected arm out to the side, then lower it slowly.',
         'target_joint': 'shoulder',
         'movement': 'abduction',
-        'target_range': 80,
+        'target_range': 90,
         'allowed_compensation': 10,
         'start_position': 'arm relaxed beside the body',
         'peak_condition': 'arm reaches the session target without leaving the frontal plane',
@@ -28,7 +28,7 @@ EXERCISES = {
         'instructions': 'Turn slightly so the affected side is visible. Raise the arm forward, then lower it slowly.',
         'target_joint': 'shoulder',
         'movement': 'flexion',
-        'target_range': 90,
+        'target_range': 120,
         'allowed_compensation': 10,
         'start_position': 'arm relaxed beside the body',
         'peak_condition': 'arm reaches the session target in the sagittal plane',
@@ -96,10 +96,10 @@ EXERCISES = {
         'instructions': 'Face a wall. Walk the fingers upward, pause at a comfortable height, then walk back down.',
         'target_joint': 'shoulder',
         'movement': 'flexion',
-        'target_range': 90,
-        'allowed_compensation': 10,
-        'start_position': 'hand at waist height on the wall',
-        'peak_condition': 'highest comfortable finger walk',
+        'target_range': 100,
+        'allowed_compensation': 12,
+        'start_position': 'hand on the wall at waist height',
+        'peak_condition': 'comfortable climb height',
         'completion_condition': 'walk the hand back down',
         'safety_conditions': ['do not shrug the shoulder to the ear', 'stop below a painful end range'],
         'tracking_supported': True,
@@ -113,9 +113,9 @@ EXERCISES = {
         'instructions': 'Elbow at the side, rotate the forearm outward within comfort.',
         'target_joint': 'shoulder',
         'movement': 'external_rotation',
-        'target_range': 45,
+        'target_range': 40,
         'allowed_compensation': 8,
-        'start_position': 'elbow flexed, forearm across the abdomen',
+        'start_position': 'elbow flexed at the side',
         'peak_condition': 'comfortable outward rotation',
         'completion_condition': 'return to the start position',
         'safety_conditions': ['keep the elbow at the side', 'do not compensate with the trunk'],
@@ -147,7 +147,13 @@ def get_exercise(exercise_id):
     exercise = EXERCISES.get(exercise_id)
     if not exercise:
         raise KeyError('Unknown exercise: ' + exercise_id)
-    return dict(exercise)
+    row = dict(exercise)
+    row.setdefault('allowed_compensation', 10)
+    row.setdefault('rest_angle', 20)
+    row.setdefault('raise_angle', 30)
+    row.setdefault('start_position', 'arm relaxed')
+    row.setdefault('peak_condition', 'comfortable session target')
+    return row
 
 
 def approved_library():

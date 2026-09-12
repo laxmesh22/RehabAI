@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -21,8 +22,12 @@ def hash_password(password, salt=None):
 
 
 def verify_password(password, stored):
-    salt, digest = stored.split('$', 1)
-    return hash_password(password, salt) == stored
+    try:
+        salt, _digest = stored.split('$', 1)
+        candidate = hash_password(password, salt)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return hmac.compare_digest(candidate, stored)
 
 
 def create_token(user):

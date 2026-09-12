@@ -21,4 +21,4 @@ Demo patient P102 is synthetic seed data for the judge walkthrough. Dashboard an
 
 ## Consumer Android APK
 
-A Capacitor patient shell (`mobile/`) reuses the same mint UI. Entry is Talk-first (`/?consumer=1#/app`): the voice agent asks the six pain/function questions, stores answers in `storage/patients/{id}/memory.json`, then opens a personal dashboard. **Start session** uses the existing OpenCV/pose pipeline. Without `REHABAI_POSE_MODEL`, phone frames are rejected and sessions stay labelled simulation. See [docs/CONSUMER_APK.md](CONSUMER_APK.md).
+A Capacitor patient shell (`mobile/`) reuses the same mint UI. Entry is Talk-first (`/?consumer=1#/app`): the voice agent asks the six pain/function questions, stores answers in `storage/patients/{id}/memory.json`, then opens a personal dashboard. **Start session** uses the existing OpenCV/pose pipeline (`REHABAI_POSE_KIND=opencv` by default). On hosts without MediaPipe (e.g. Python 3.13), `Start-RehabAI.ps1` starts a local pose sidecar. Without pose (local or `REHABAI_PHONE_INFERENCE_URL`), phone frames are rejected and sessions stay labelled simulation. See [docs/CONSUMER_APK.md](CONSUMER_APK.md).

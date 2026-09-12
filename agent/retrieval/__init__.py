@@ -5,7 +5,9 @@ from typing import Any
 
 from backend.memory import load_memory
 from backend.intake import INTAKE_FIELDS
+from backend.profile import normalize_profile
 from agent.tools.clinical import calculate_patient_progress, get_rom_history, get_pain_history
+from agent.session_intel import memory_rag_slice
 
 
 IDENTITY_KEYS = {
@@ -19,6 +21,7 @@ def sanitize_memory_slice(raw: dict[str, Any] | None) -> dict[str, Any]:
         return {}
     intake = raw.get('intake') if isinstance(raw.get('intake'), dict) else {}
     scores = {fid: intake.get(fid) for fid in INTAKE_FIELDS if isinstance(intake.get(fid), int)}
+    profile = normalize_profile(raw.get('profile') if isinstance(raw.get('profile'), dict) else {})
     summaries = []
     for item in (raw.get('session_summaries') or [])[-5:]:
         if not isinstance(item, dict):
@@ -33,6 +36,9 @@ def sanitize_memory_slice(raw: dict[str, Any] | None) -> dict[str, Any]:
     return {
         'intake_scores': scores,
         'intake_confirmed': bool(intake.get('confirmed')),
+        'profile_complete': bool(profile.get('complete')),
+        'profile_age': profile.get('age') if isinstance(profile.get('age'), int) else None,
+        'profile_side': profile.get('affected_side') if profile.get('affected_side') in ('left', 'right') else None,
         'report_phase': raw.get('report_phase') if raw.get('report_phase') in ('needed', 'done', 'skipped') else 'needed',
         'ocr_abduction': None,
         'ocr_flexion': None,
@@ -42,6 +48,10 @@ def sanitize_memory_slice(raw: dict[str, Any] | None) -> dict[str, Any]:
         'last_pain_after': raw.get('last_pain_after'),
         'last_source': raw.get('last_source'),
         'session_summaries': summaries,
+        'rag_summary': memory_rag_slice(raw),
+        'pacing_hint': memory_rag_slice(raw).get('pacing_hint'),
+        'rom_trend': memory_rag_slice(raw).get('rom_trend'),
+        'concerns': memory_rag_slice(raw).get('concerns'),
     }
 
 

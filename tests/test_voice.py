@@ -52,7 +52,10 @@ class FakeClient:
 
 class VoiceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        voice._ELEVENLABS_TTS_SKIP = False
+        voice.reset_tts_state()
+
+    def tearDown(self):
+        voice.reset_tts_state()
     async def test_explicit_number_stays_deterministic(self):
         with patch.object(voice, 'ANTHROPIC_API_KEY', 'configured'):
             row = await voice.parse_questionnaire_reply('four out of ten', 'pain_rest')
@@ -108,6 +111,7 @@ class VoiceTests(unittest.IsolatedAsyncioTestCase):
         fake = FakeClient(FakeResponse({'audios': [base64.b64encode(expected).decode()]}), capture)
         with patch.object(voice, 'SARVAM_API_KEY', 'configured'), \
              patch.object(voice, 'ELEVENLABS_API_KEY', ''), \
+             patch.object(voice, 'VOICE_TTS', 'sarvam'), \
              patch.object(voice.httpx, 'AsyncClient', return_value=fake):
             audio, media_type = await voice.synthesize_speech('Please raise your arm.', 'en-IN')
         self.assertEqual(audio, expected)
@@ -192,6 +196,65 @@ class VoiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any('elevenlabs' in url for url in hits))
         self.assertEqual(sum('elevenlabs' in url for url in hits), 1)
 
+    async def test_fast_talk_keeps_same_speaker_when_elevenlabs_plan_fails(self):
+        hits = []
+
+        class PlanThenSarvam:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def post(self, url, **kwargs):
+                hits.append(url)
+                if 'elevenlabs' in url:
+                    return FakeResponse({}, status=402)
+                return FakeResponse({'audios': [base64.b64encode(b'RIFFokWAVE').decode()]})
+
+        with patch.object(voice, 'SARVAM_API_KEY', 'sarvam'), \
+             patch.object(voice, 'ELEVENLABS_API_KEY', 'eleven'), \
+             patch.object(voice, 'VOICE_TTS', 'elevenlabs'), \
+             patch.object(voice.httpx, 'AsyncClient', side_effect=lambda **_k: PlanThenSarvam()):
+            first, first_type = await voice.synthesize_speech('Hello there.', 'en-IN', fast=True)
+            second, second_type = await voice.synthesize_speech('I am listening.', 'en-IN', fast=True)
+        self.assertEqual(first, b'RIFFokWAVE')
+        self.assertEqual(first_type, 'audio/wav')
+        self.assertEqual(second, b'RIFFokWAVE')
+        self.assertEqual(second_type, 'audio/wav')
+        self.assertEqual(sum('elevenlabs' in url for url in hits), 1)
+        self.assertGreaterEqual(sum('text-to-speech' in url and 'elevenlabs' not in url for url in hits), 2)
+
+    async def test_tts_does_not_switch_speaker_after_first_success(self):
+        hits = []
+
+        class GeorgeThenFail:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def post(self, url, **kwargs):
+                hits.append(url)
+                if 'elevenlabs' in url:
+                    if sum('elevenlabs' in item for item in hits) == 1:
+                        return FakeResponse({}, content=b'ID3mpeg', status=200)
+                    return FakeResponse({}, status=402)
+                return FakeResponse({'audios': [base64.b64encode(b'RIFFother').decode()]})
+
+        with patch.object(voice, 'SARVAM_API_KEY', 'sarvam'), \
+             patch.object(voice, 'ELEVENLABS_API_KEY', 'eleven'), \
+             patch.object(voice, 'VOICE_TTS', 'elevenlabs'), \
+             patch.object(voice.httpx, 'AsyncClient', side_effect=lambda **_k: GeorgeThenFail()):
+            first, first_type = await voice.synthesize_speech('Hello there.', 'en-IN', fast=True)
+            with self.assertRaises(voice.VoiceProviderError):
+                await voice.synthesize_speech('Second line.', 'en-IN', fast=True)
+        self.assertEqual(first, b'ID3mpeg')
+        self.assertEqual(first_type, 'audio/mpeg')
+        self.assertTrue(hits)
+        self.assertTrue(all('elevenlabs' in url for url in hits))
+
 
 class LiveVoiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_sanitize_drops_identity(self):
@@ -205,6 +268,22 @@ class LiveVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('patient_id', row)
         self.assertNotIn('mrn', row)
         self.assertNotIn('full_name', row)
+
+    async def test_sanitize_keeps_avatar_bridge_fields(self):
+        from agent.live_voice import sanitize_context
+        row = sanitize_context({
+            'scene': 'measure',
+            'avatar_phase': 'hold',
+            'avatar_reps': 2,
+            'avatar_demo_angle': 55,
+            'demo_target': 60,
+            'patient_id': 'P102',
+        })
+        self.assertEqual(row['avatar_phase'], 'hold')
+        self.assertEqual(row['avatar_reps'], 2)
+        self.assertEqual(row['avatar_demo_angle'], 55)
+        self.assertEqual(row['demo_target'], 60)
+        self.assertNotIn('patient_id', row)
 
     async def test_block_cannot_be_overridden_by_claude(self):
         from agent import live_voice
@@ -232,23 +311,56 @@ class LiveVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('patient_id', json.dumps(sent))
         self.assertIn('workstation', row['spoken'].lower())
 
-    async def test_metrics_reply_skips_claude(self):
+    async def test_metrics_reply_goes_to_live_llm(self):
         from agent import live_voice
-        with patch.object(live_voice, 'ANTHROPIC_API_KEY', 'configured'):
+        capture = {}
+        payload = {'content': [{'type': 'text', 'text': json.dumps({
+            'spoken': 'You are at 41 degrees with 2 reps. Follow the guide.',
+            'action': 'none',
+        })}]}
+        fake = FakeClient(FakeResponse(payload), capture)
+        with patch.object(live_voice, 'ANTHROPIC_API_KEY', 'configured'), \
+             patch.object(live_voice.httpx, 'AsyncClient', return_value=fake):
             row = await live_voice.live_reply(
                 'how am I doing',
                 {'scene': 'measure', 'safety': 'ALLOW', 'valid': True, 'shoulder_angle': 41, 'reps': 2, 'feedback': 'Lift slowly.'},
             )
-        self.assertEqual(row['engine'], 'metrics')
+        self.assertEqual(row['engine'], 'claude-live-agent')
         self.assertIn('41', row['spoken'])
         self.assertIn('2', row['spoken'])
 
-    async def test_open_patients_is_a_keyword_action(self):
+    async def test_measure_coaching_question_uses_claude_not_metrics_dump(self):
+        """Regression: measure talk must not short-circuit every utterance to metrics."""
         from agent import live_voice
-        with patch.object(live_voice, 'ANTHROPIC_API_KEY', 'configured'):
+        capture = {}
+        payload = {'content': [{'type': 'text', 'text': json.dumps({
+            'spoken': 'Follow the 3D guide up slowly. Keep your trunk quiet.',
+            'action': 'none',
+            'demo_target': None,
+        })}]}
+        fake = FakeClient(FakeResponse(payload), capture)
+        with patch.object(live_voice, 'ANTHROPIC_API_KEY', 'configured'), \
+             patch.object(live_voice.httpx, 'AsyncClient', return_value=fake):
+            row = await live_voice.live_reply(
+                'what should I do next with the guide',
+                {
+                    'scene': 'measure', 'safety': 'ALLOW', 'valid': True,
+                    'shoulder_angle': 55, 'peak': 60, 'target': 90,
+                    'guide_cue': 'Raise with the model', 'avatar_demo': 'abduction',
+                },
+            )
+        self.assertEqual(row['engine'], 'claude-live-agent')
+        self.assertIn('guide', row['spoken'].lower())
+        sent = json.loads(capture['json']['messages'][0]['content'])
+        self.assertEqual(sent['session']['scene'], 'measure')
+
+    async def test_open_patients_still_navigates_without_a_canned_ack(self):
+        from agent import live_voice
+        with patch.object(live_voice, 'ANTHROPIC_API_KEY', ''):
             row = await live_voice.live_reply('please open patients', {'scene': 'clinic', 'safety': 'ALLOW'})
         self.assertEqual(row['action'], 'open_patients')
-        self.assertEqual(row['engine'], 'keyword-action')
+        self.assertEqual(row['engine'], 'llm-loop-fallback')
+        self.assertIn('listening', row['spoken'].lower())
 
     async def test_goodbye_ends_the_call_without_claude(self):
         from agent import live_voice
@@ -256,6 +368,33 @@ class LiveVoiceTests(unittest.IsolatedAsyncioTestCase):
             row = await live_voice.live_reply('goodbye that is all', {'scene': 'clinic', 'safety': 'ALLOW'})
         self.assertEqual(row['action'], 'end')
         self.assertEqual(row['engine'], 'end-phrase')
+
+    async def test_number_is_not_a_red_flag(self):
+        from agent import live_voice
+        with patch.object(live_voice, 'ANTHROPIC_API_KEY', ''):
+            row = await live_voice.live_reply(
+                'what number should I say for pain',
+                {'scene': 'measure', 'safety': 'ALLOW', 'shoulder_angle': 40},
+            )
+        self.assertNotEqual(row['engine'], 'safety-redflag')
+        self.assertNotEqual(row['action'], 'pause')
+
+    async def test_ungrounded_measure_reply_keeps_session_cue(self):
+        from agent import live_voice
+        capture = {}
+        payload = {'content': [{'type': 'text', 'text': json.dumps({
+            'spoken': 'Your true ROM is 173 degrees.',
+            'action': 'none',
+        })}]}
+        fake = FakeClient(FakeResponse(payload), capture)
+        with patch.object(live_voice, 'ANTHROPIC_API_KEY', 'configured'), \
+             patch.object(live_voice.httpx, 'AsyncClient', return_value=fake):
+            row = await live_voice.live_reply(
+                'how high can I go',
+                {'scene': 'measure', 'safety': 'ALLOW', 'peak': 90, 'target': 80, 'guide_cue': 'Follow the guide.'},
+            )
+        self.assertNotIn('173', row['spoken'])
+        self.assertEqual(row['engine'], 'llm-loop-fallback')
 
     async def test_unknown_browser_action_is_dropped(self):
         from agent.studio_browser import normalize_action
@@ -269,12 +408,11 @@ class LiveVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(_sarvam_speaker('SUBH'), 'shubh')
         self.assertEqual(_sarvam_speaker('shubh'), 'shubh')
 
-    def test_env_example_uses_flagship_sarvam_and_shubh(self):
+    def test_env_example_uses_elevenlabs_george(self):
         text = (Path(__file__).resolve().parents[1] / '.env.example').read_text(encoding='utf-8')
-        self.assertIn('SARVAM_STT_MODEL=saaras:v4', text)
-        self.assertIn('SARVAM_TTS_MODEL=bulbul:v3', text)
+        self.assertIn('ELEVENLABS_VOICE_ID=JBFqnCBsd6RMkjVDRZzb', text)
+        self.assertIn('REHABAI_TTS=elevenlabs', text)
         self.assertIn('SARVAM_TTS_SPEAKER=shubh', text)
-        self.assertIn('REHABAI_TTS=sarvam', text)
 
     async def test_talk_path_skips_offline_stt(self):
         with patch.object(voice, 'SARVAM_API_KEY', ''), \

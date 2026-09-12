@@ -38,11 +38,18 @@ class VoiceProviderError(RuntimeError):
 
 
 _ELEVENLABS_TTS_SKIP = False
+_TTS_STICKY: str | None = None
 
 
 def skip_elevenlabs_tts() -> None:
     global _ELEVENLABS_TTS_SKIP
     _ELEVENLABS_TTS_SKIP = True
+
+
+def reset_tts_state() -> None:
+    global _ELEVENLABS_TTS_SKIP, _TTS_STICKY
+    _ELEVENLABS_TTS_SKIP = False
+    _TTS_STICKY = None
 
 
 def voice_status() -> dict[str, Any]:
@@ -63,10 +70,19 @@ def voice_status() -> dict[str, Any]:
         'sarvam_stt_model': SARVAM_STT_MODEL if SARVAM_API_KEY else None,
         'sarvam_tts_model': SARVAM_TTS_MODEL if SARVAM_API_KEY else None,
         'sarvam_tts_speaker': SARVAM_TTS_SPEAKER if SARVAM_API_KEY else None,
+        'sarvam_tts_speaker_label': 'Subh' if SARVAM_API_KEY else None,
         'elevenlabs_tts_model': ELEVENLABS_TTS_MODEL if ELEVENLABS_API_KEY and not _ELEVENLABS_TTS_SKIP else None,
+        'elevenlabs_voice_id': ELEVENLABS_VOICE_ID if ELEVENLABS_API_KEY else None,
+        'elevenlabs_voice_label': 'George' if ELEVENLABS_API_KEY else None,
         'anthropic_model': ANTHROPIC_MODEL if ANTHROPIC_API_KEY else None,
         'privacy': 'utterance_and_session_metrics_only_no_patient_identifiers_or_video',
-        'talk_tts': tts_order_names[0] if tts_order_names else 'browser-speech',
+        'talk_tts': (
+            f'elevenlabs:George' if (ELEVENLABS_API_KEY and VOICE_TTS == 'elevenlabs' and not _ELEVENLABS_TTS_SKIP)
+            else (
+                'sarvam-bulbul:shubh(Subh)' if (SARVAM_API_KEY and VOICE_TTS != 'elevenlabs')
+                else (tts_order_names[0] if tts_order_names else 'browser-speech')
+            )
+        ),
     }
 
 
@@ -84,11 +100,20 @@ def stt_engines() -> list[str]:
 
 
 def tts_engines() -> list[str]:
+    """One Talk speaker per process. Do not flip George ↔ Subh between taps."""
     sarvam = ['sarvam-bulbul'] if SARVAM_API_KEY else []
     eleven = ['elevenlabs'] if ELEVENLABS_API_KEY and not _ELEVENLABS_TTS_SKIP else []
-    if VOICE_TTS == 'elevenlabs':
-        return eleven + sarvam
-    return sarvam + eleven
+    if VOICE_TTS == 'sarvam':
+        order = sarvam or eleven
+    else:
+        order = eleven + sarvam
+    if _TTS_STICKY:
+        if _TTS_STICKY in order:
+            return [_TTS_STICKY]
+        # The speaker already used in this process is gone. Stay silent on
+        # cloud TTS rather than introducing a second person.
+        return []
+    return order
 
 
 async def transcribe_audio(
@@ -109,7 +134,7 @@ async def transcribe_audio(
         engines = ['elevenlabs-scribe'] + [name for name in engines if name != 'elevenlabs-scribe']
     elif prefer == 'sarvam' and 'sarvam-saaras' in engines:
         engines = ['sarvam-saaras'] + [name for name in engines if name != 'sarvam-saaras']
-    stt_timeout = min(6.0 if fast else 10.0, VOICE_TIMEOUT_S)
+    stt_timeout = min(4.0 if fast else 10.0, VOICE_TIMEOUT_S)
     if fast:
         engines = engines[:1]
     for engine in engines:
@@ -139,16 +164,26 @@ async def transcribe_audio(
     }
 
 
-async def synthesize_speech(text: str, language: str = 'en-IN') -> tuple[bytes, str]:
+async def synthesize_speech(text: str, language: str = 'en-IN', *, fast: bool = False) -> tuple[bytes, str]:
+    global _TTS_STICKY
     clean = ' '.join((text or '').split())
     if not clean or len(clean) > 600:
         raise VoiceProviderError('Speech text must contain 1 to 600 characters')
     last_error = 'No text-to-speech provider is configured'
-    for engine in tts_engines():
+    engines = tts_engines()
+    # Do not slice to the first engine on Talk. That made tap 1 use Windows
+    # speech (primary 402/timeout) and tap 2 a different cloud speaker.
+    tts_cap = 8.0 if fast else None
+    for engine in engines:
         try:
             if engine == 'elevenlabs':
-                return await _elevenlabs_tts(clean, language)
-            return await _sarvam_tts(clean, language)
+                audio, media_type = await _elevenlabs_tts(clean, language, timeout_s=tts_cap or 10.0)
+            else:
+                audio, media_type = await _sarvam_tts(
+                    clean, language, timeout_s=tts_cap or min(8.0, VOICE_TIMEOUT_S),
+                )
+            _TTS_STICKY = engine
+            return audio, media_type
         except VoiceProviderError as exc:
             last_error = str(exc)
             continue
@@ -197,9 +232,9 @@ async def _elevenlabs_stt(data, filename, content_type, language, *, timeout_s: 
     }
 
 
-async def _sarvam_tts(text: str, language: str) -> tuple[bytes, str]:
+async def _sarvam_tts(text: str, language: str, *, timeout_s: float | None = None) -> tuple[bytes, str]:
     try:
-        async with httpx.AsyncClient(timeout=min(10.0, VOICE_TIMEOUT_S)) as client:
+        async with httpx.AsyncClient(timeout=timeout_s or min(10.0, VOICE_TIMEOUT_S)) as client:
             response = await client.post(
                 f'{SARVAM_BASE_URL}/text-to-speech',
                 headers={
@@ -211,9 +246,13 @@ async def _sarvam_tts(text: str, language: str) -> tuple[bytes, str]:
                     'language_code': language if language in ('en-IN', 'hi-IN') else 'en-IN',
                     'model': SARVAM_TTS_MODEL,
                     'speaker': SARVAM_TTS_SPEAKER,
-                    'pace': 1.0,
-                    'speech_sample_rate': 24000,
+                    'pace': 1.05,
+                    'speech_sample_rate': 22050,
                 },
+            )
+        if response.status_code == 402:
+            raise VoiceProviderError(
+                'Sarvam Subh TTS has no credits (402). Top up at dashboard.sarvam.ai — browser voice is not Subh.'
             )
         response.raise_for_status()
         payload = response.json()
@@ -227,9 +266,9 @@ async def _sarvam_tts(text: str, language: str) -> tuple[bytes, str]:
         raise VoiceProviderError('Sarvam text-to-speech is unavailable') from exc
 
 
-async def _elevenlabs_tts(text: str, language: str) -> tuple[bytes, str]:
+async def _elevenlabs_tts(text: str, language: str, *, timeout_s: float | None = None) -> tuple[bytes, str]:
     try:
-        async with httpx.AsyncClient(timeout=min(10.0, VOICE_TIMEOUT_S)) as client:
+        async with httpx.AsyncClient(timeout=timeout_s or min(10.0, VOICE_TIMEOUT_S)) as client:
             response = await client.post(
                 f'{ELEVENLABS_BASE_URL}/v1/text-to-speech/{ELEVENLABS_VOICE_ID}',
                 headers={

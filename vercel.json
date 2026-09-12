@@ -1,0 +1,6 @@
+﻿{
+  "version": 2,
+  "buildCommand": null,
+  "outputDirectory": "vercel-web",
+  "rewrites": [{ "source": "/(.*)", "destination": "/$1" }]
+}

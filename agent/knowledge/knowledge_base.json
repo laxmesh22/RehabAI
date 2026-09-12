@@ -1,0 +1,204 @@
+{
+  "version": 1,
+  "disclaimer": "Education and coaching support only. Not a diagnosis of adhesive capsulitis. Not a prescription. A physiotherapist owns treatment changes.",
+  "chunks": [
+    {
+      "id": "edu-what-is-ac",
+      "category": "education",
+      "title": "What adhesive capsulitis means in rehab",
+      "stage_relevance": ["freezing", "frozen", "thawing"],
+      "movement": null,
+      "content": "Adhesive capsulitis, often called frozen shoulder, is a clinical condition a doctor or physiotherapist diagnoses. It typically involves a stiff, painful shoulder capsule and reduced range of motion. RehabAI does not diagnose it from a camera. This product measures movement, pain, and exercise quality so a clinician can review progress. If someone has not been assessed in clinic, they should not treat an app score as a disease label.",
+      "content_hi": "एडहेसिव कैप्सूलाइटिस, जिसे अक्सर फ्रोज़न शोल्डर कहते हैं, डॉक्टर या फिजियोथेरेपिस्ट का नैदानिक निर्णय है। कैमरा निदान नहीं करता। यह ऐप गति, दर्द और अभ्यास की गुणवत्ता मापता है ताकि चिकित्सक समीक्षा कर सकें।"
+    },
+    {
+      "id": "edu-three-stages",
+      "category": "education",
+      "title": "Typical painful, stiff, and recovering phases",
+      "stage_relevance": ["freezing", "frozen", "thawing"],
+      "movement": null,
+      "content": "Clinicians often describe three overlapping phases in adhesive capsulitis care: a more painful irritable phase with rising stiffness, a stiffness-dominant phase where motion is limited but pain may ease, and a recovering phase where motion gradually returns. These are typical patterns, not a camera diagnosis, and people do not move through them on a fixed calendar. Session intensity should follow symptoms and measured comfort, not a guessed stage name.",
+      "content_hi": "देखभाल में अक्सर तीन अतिव्यापी चरण बताए जाते हैं: अधिक दर्द वाला चिड़चिड़ा चरण, अकड़न वाला चरण, और गति लौटने वाला चरण। यह कैमरा निदान नहीं है। सत्र की तीव्रता लक्षण और मापी गई सुविधा के अनुसार होनी चाहिए।"
+    },
+    {
+      "id": "edu-timelines",
+      "category": "education",
+      "title": "Typical timelines are wide",
+      "stage_relevance": ["freezing", "frozen", "thawing"],
+      "movement": null,
+      "content": "Published clinical courses for frozen-shoulder-type stiffness often span many months, sometimes more than a year. Some people improve sooner; some need longer supervised care. An app cannot promise a date. Week-to-week change can be small. Ask a physiotherapist before changing the plan because a timeline feels slow.",
+      "content_hi": "फ्रोज़न-शोल्डर जैसी अकड़न के प्रकाशित पाठ्यक्रम अक्सर कई महीनों तक चलते हैं। ऐप कोई तारीख वादा नहीं कर सकता। योजना बदलने से पहले फिजियोथेरेपिस्ट से पूछें।"
+    },
+    {
+      "id": "edu-gentle-movement",
+      "category": "education",
+      "title": "Gentle consistent movement beats forcing range",
+      "stage_relevance": ["freezing", "frozen", "thawing"],
+      "movement": null,
+      "content": "In this condition, regular comfortable movement usually matters more than pushing to a painful end range. Stretch discomfort that eases when you stop can be acceptable if a clinician has approved the exercise. Sharp, shooting, or rapidly rising pain is a reason to stop that repetition. Do not ignore pain to chase degrees on the screen.",
+      "content_hi": "नियमित आरामदायक गति दर्दनाक अंत सीमा तक धकेलने से ज़्यादा मायने रखती है। तेज, चुभने वाला, या तेजी से बढ़ता दर्द उस दोहराव को रोकने का कारण है। स्क्रीन पर डिग्री के लिए दर्द न अनदेखा करें।"
+    },
+    {
+      "id": "safety-recent-surgery",
+      "category": "safety",
+      "title": "Recent surgery or acute injury",
+      "stage_relevance": ["freezing", "frozen", "thawing"],
+      "movement": null,
+      "content": "Do not start or progress a shoulder exercise after recent shoulder surgery, fracture, dislocation, or an acute injury unless the operating surgeon or physiotherapist has cleared that movement. RehabAI cannot see wounds, implants, or restrictions. If there is a postoperative protocol, follow that written plan instead of the on-screen demo target.",
+      "content_hi": "हाल की सर्जरी, फ्रैक्चर, डिस्लोकेशन या तीव्र चोट के बाद तब तक व्यायाम न बढ़ाएँ जब तक सर्जन या फिजियोथेरेपिस्ट ने अनुमति न दी हो। स्क्रीन डेमो लिखित पोस्ट-ऑप योजना की जगह नहीं लेता।"
+    },
+    {
+      "id": "safety-sharp-vs-stretch",
+      "category": "safety",
+      "title": "Stretch discomfort versus sharp pain",
+      "stage_relevance": ["freezing", "frozen", "thawing"],
+      "movement": null,
+      "content": "A mild pulling or stretch at the end of comfortable range can be expected in guided rehab. Sharp, stabbing, shooting, burning, or suddenly much worse pain is not a target. If pain jumps by about two points out of ten or the arm feels unsafe, pause, rest the arm, and tell a physiotherapist. Never push through red-flag pain to match the 3D guide.",
+      "content_hi": "आरामदायक सीमा के अंत में हल्की खिंचाव सामान्य हो सकती है। तेज, चुभने वाला, जलन वाला, या अचानक बहुत बढ़ा दर्द लक्ष्य नहीं है। दर्द दो अंक बढ़े या हाथ असुरक्षित लगे तो रुकें।"
+    },
+    {
+      "id": "safety-red-flags",
+      "category": "safety",
+      "title": "Same-day medical warning signs",
+      "stage_relevance": ["freezing", "frozen", "thawing"],
+      "movement": null,
+      "content": "Stop the session and seek same-day medical care for sudden severe shoulder pain, new numbness or tingling down the arm or hand, inability to move the arm at all, a deformed or newly swollen joint after trauma, chest pain, unexplained shortness of breath, fainting, or fever with a hot red joint. RehabAI cannot rule out emergency conditions.",
+      "content_hi": "अचानक तेज दर्द, नए सुन्नपन या झुनझुनी, हाथ बिल्कुल न हिलना, चोट के बाद सूजन, सीने का दर्द, सांस फूलना, बेहोशी, या बुखार के साथ गर्म जोड़ पर सत्र रोकें और उसी दिन चिकित्सा सहायता लें।"
+    },
+    {
+      "id": "safety-stop-session",
+      "category": "safety",
+      "title": "When to stop this session",
+      "stage_relevance": ["freezing", "frozen", "thawing"],
+      "movement": null,
+      "content": "Stop the current exercise if tracking is lost, the trunk leans to cheat range, pain rises sharply, or a clinician previously said to rest. Keep the arm supported. Do not continue repetitions to finish a goal number. Safety BLOCK and PAUSE always override coaching encouragement.",
+      "content_hi": "ट्रैकिंग खो जाए, धड़ झुककर रेंज पूरी हो, दर्द तेज बढ़े, या चिकित्सक ने आराम कहा हो तो व्यायाम रोकें। लक्ष्य संख्या पूरी करने के लिए दोहराव जारी न रखें।"
+    },
+    {
+      "id": "faq-pulling",
+      "category": "faq",
+      "title": "Pulling sensation during movement",
+      "stage_relevance": ["freezing", "frozen", "thawing"],
+      "movement": null,
+      "content": "A gentle pulling or stretch at the end of available range is commonly reported in stiff-shoulder rehab and can be acceptable when it settles after the arm lowers. It is not proof of a diagnosis. If the pulling becomes sharp, lingers at rest, or you feel the need to hold your breath, reduce the height and tell your physiotherapist.",
+      "content_hi": "उपलब्ध सीमा के अंत में हल्की खिंचाव अक्सर बताई जाती है और हाथ नीचे आने पर शांत हो तो स्वीकार्य हो सकती है। तेज हो, आराम में रहे, या सांस रोकनी पड़े तो ऊँचाई कम करें।"
+    },
+    {
+      "id": "faq-worse-days",
+      "category": "faq",
+      "title": "Why some days hurt more",
+      "stage_relevance": ["freezing", "frozen", "thawing"],
+      "movement": null,
+      "content": "Pain and stiffness often fluctuate day to day with sleep, how much the arm was used, and how irritable the shoulder is. A worse day is not automatically a failure of the plan. On irritable days, stay with smaller comfortable range and fewer repetitions. Do not chase yesterday's peak angle.",
+      "content_hi": "दर्द और अकड़न दिन-प्रतिदिन बदल सकते हैं। खराब दिन योजना की असफलता नहीं है। चिड़चिड़े दिनों में छोटी आरामदायक सीमा और कम दोहराव रखें। कल की शिखर डिग्री का पीछा न करें।"
+    },
+    {
+      "id": "faq-how-long",
+      "category": "faq",
+      "title": "How long until movement improves",
+      "stage_relevance": ["freezing", "frozen", "thawing"],
+      "movement": null,
+      "content": "Measured range can take weeks to months to change in a meaningful way. Small session-to-session differences are common and are not a recovery percentage. RehabAI reports stored degrees and pain scores only. A physiotherapist interprets whether the trend is enough and whether imaging or injection is even relevant.",
+      "content_hi": "मापी गई रेंज को अर्थपूर्ण बदलाव में हफ्ते या महीने लग सकते हैं। RehabAI केवल संग्रहीत डिग्री और दर्द अंक बताता है। प्रवृत्ति का अर्थ फिजियोथेरेपिस्ट बताते हैं।"
+    },
+    {
+      "id": "faq-not-improving",
+      "category": "faq",
+      "title": "If it is not getting better",
+      "stage_relevance": ["frozen", "thawing"],
+      "movement": null,
+      "content": "If stored range and function scores are stuck or worsening across several comparable sessions, that is a reason for clinician review, not a reason to force higher targets. Do not add new exercises from the internet. Keep the current approved movement if comfortable, or rest, and ask the physiotherapist to review the record.",
+      "content_hi": "यदि कई तुलनीय सेशन में रेंज अटकी या बिगड़ रही है, तो ऊँचा लक्ष्य थोपने के बजाय चिकित्सक समीक्षा चाहिए। इंटरनेट से नए व्यायाम न जोड़ें।"
+    },
+    {
+      "id": "faq-clicking",
+      "category": "faq",
+      "title": "Clicking or cracking during movement",
+      "stage_relevance": ["freezing", "frozen", "thawing"],
+      "movement": null,
+      "content": "Painless clicking or cracking can occur with shoulder movement and is often mechanical noise. It is not by itself a diagnosis. Stop and get in-person review if clicking comes with locking, giving way, new swelling, numbness, or sharp pain. RehabAI cannot see inside the joint.",
+      "content_hi": "बिना दर्द की क्लिक या कड़क अक्सर यांत्रिक आवाज़ हो सकती है। यह निदान नहीं है। लॉक होना, अचानक कमज़ोरी, नई सूजन, सुन्नपन या तेज दर्द हो तो रुकें और व्यक्तिगत जाँच कराएँ।"
+    },
+    {
+      "id": "faq-should-i-continue",
+      "category": "faq",
+      "title": "Should I keep going today",
+      "stage_relevance": ["freezing", "frozen", "thawing"],
+      "movement": null,
+      "content": "Continue the current approved exercise only while safety is ALLOW, tracking is valid, and pain stays near the starting level. If you need to lean the trunk, shrug hard, or breathe through sharp pain to reach the guide, stop that repetition. Completing every rep is not required.",
+      "content_hi": "व्यायाम तभी जारी रखें जब सुरक्षा ALLOW हो, ट्रैकिंग सही हो, और दर्द शुरूआती स्तर के पास रहे। धड़ झुकाना, कंधा उचकाना, या तेज दर्द सहना पड़े तो उस दोहराव को रोकें।"
+    },
+    {
+      "id": "encourage-consistency",
+      "category": "encouragement",
+      "title": "Consistency over intensity",
+      "stage_relevance": ["freezing", "frozen", "thawing"],
+      "movement": null,
+      "content": "Showing up for comfortable repetitions most days usually helps more than one aggressive session. Pain is information, not something to minimise. A calm follow-along with the 3D guide is enough for this visit. Your physiotherapist still decides when to progress loading.",
+      "content_hi": "आरामदायक दोहराव अधिकतर दिनों में करना एक आक्रामक सत्र से आमतौर पर बेहतर है। दर्द जानकारी है। शांत गाइड अनुसरण आज के लिए काफी है।"
+    },
+    {
+      "id": "encourage-plateau",
+      "category": "encouragement",
+      "title": "Plateaus can be normal",
+      "stage_relevance": ["frozen", "thawing"],
+      "movement": null,
+      "content": "Stored range can plateau for several sessions even when you are practising well. A plateau is not proof that therapy is useless and not proof of a new diagnosis. Keep form quiet, avoid forcing, and let a clinician compare comparable sessions before changing the plan.",
+      "content_hi": "अच्छी प्रैक्टिस के बावजूद रेंज कई सेशन तक समतल रह सकती है। यह योजना बेकार होने का सबूत नहीं है। फॉर्म शांत रखें और योजना बदलने से पहले चिकित्सक से कहें।"
+    },
+    {
+      "id": "pacing-freezing",
+      "category": "pacing",
+      "title": "Pain-led irritable phase pacing",
+      "stage_relevance": ["freezing"],
+      "movement": null,
+      "content": "When pain at rest or with small movements is high, sessions should stay gentle: supported pendulum or small-range assisted motion, fewer repetitions, and no aggressive stretching. The goal is calm movement within comfort, not a high abduction target. Escalate only after a clinician reviews falling pain scores.",
+      "content_hi": "आराम या छोटी गति पर दर्द अधिक हो तो सत्र कोमल रखें: पेंडुलम या छोटी सहायक गति, कम दोहराव, आक्रामक खिंचाव नहीं। ऊँचा एब्डक्शन लक्ष्य नहीं।"
+    },
+    {
+      "id": "pacing-frozen",
+      "category": "pacing",
+      "title": "Stiffness-led phase pacing",
+      "stage_relevance": ["frozen"],
+      "movement": null,
+      "content": "When pain is more settled but measured range stays limited, stay with the approved library movement and a realistic target near recent peaks. Do not jump targets because a chart looks flat. Watch trunk lean: extra lean is compensation, not extra range. Wall climb and assisted flexion stay below a painful end range.",
+      "content_hi": "दर्द शांत हो पर रेंज सीमित रहे तो स्वीकृत व्यायाम और हाल के शिखर के पास लक्ष्य रखें। चार्ट समतल दिखे तो लक्ष्य न कूदें। धड़ झुकाव मुआवजा है, अतिरिक्त रेंज नहीं।"
+    },
+    {
+      "id": "pacing-thawing",
+      "category": "pacing",
+      "title": "Recovering-motion phase pacing",
+      "stage_relevance": ["thawing"],
+      "movement": null,
+      "content": "When stored range is improving and pain stays low, a clinician may later approve slightly higher targets within the measured peak. RehabAI may sync the demo target up to the measured peak only, never above it, and never as a new exercise prescription. Stop if pain returns while progressing.",
+      "content_hi": "रेंज सुधर रही हो और दर्द कम हो तो चिकित्सक बाद में मापे गए शिखर तक थोड़ा ऊँचा लक्ष्य स्वीकार सकते हैं। डेमो शिखर से ऊपर नहीं जाता। दर्द लौटे तो रुकें।"
+    },
+    {
+      "id": "gating-continue",
+      "category": "gating",
+      "title": "CONTINUE coaching",
+      "stage_relevance": ["freezing", "frozen", "thawing"],
+      "movement": null,
+      "content": "CONTINUE means safety is ALLOW and form is acceptable. Give one short cue: match the 3D guide path, keep the trunk quiet, breathe, and stay inside comfort. Do not add a new exercise. Do not diagnose.",
+      "content_hi": "CONTINUE का अर्थ है सुरक्षा ALLOW है। एक छोटा संकेत दें: 3D गाइड से मिलान करें, धड़ शांत, आराम के अंदर रहें। नया व्यायाम न जोड़ें।"
+    },
+    {
+      "id": "gating-caution",
+      "category": "gating",
+      "title": "CAUTION coaching",
+      "stage_relevance": ["freezing", "frozen", "thawing"],
+      "movement": null,
+      "content": "CAUTION means reduce amplitude or slow down: possible trunk lean, lower tracking confidence, or rising discomfort. Cue a smaller arc and upright trunk. Do not encourage a higher target until the caution clears.",
+      "content_hi": "CAUTION पर चाप छोटी करें और धड़ सीधा रखें। सावधानी हटने तक ऊँचा लक्ष्य न दें।"
+    },
+    {
+      "id": "gating-stop",
+      "category": "gating",
+      "title": "STOP coaching",
+      "stage_relevance": ["freezing", "frozen", "thawing"],
+      "movement": null,
+      "content": "STOP means rest the arm now. Used for BLOCK, PAUSE, red-flag symptoms, or a clear patient request to stop. Do not count more repetitions. Do not raise the demo. Tell them a physiotherapist should review before they continue.",
+      "content_hi": "STOP का अर्थ है अभी हाथ आराम दें। और दोहराव न गिनें। डेमो न बढ़ाएँ। जारी रखने से पहले फिजियोथेरेपिस्ट समीक्षा लें।"
+    }
+  ]
+}

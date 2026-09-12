@@ -4,7 +4,7 @@ from edge.biomechanics.angles import (
     calculate_flexion, compensation,
 )
 from edge.calibration import evaluate_calibration
-from edge.depth.filtering import SkeletonEMA
+from edge.depth.filtering import AngleMovingAverage, SkeletonEMA
 from edge.exercises.library import get_exercise
 from edge.exercises.state_machine import ExerciseMachine
 from edge.feedback.coach import coach_message
@@ -56,9 +56,16 @@ class VisionPipeline:
         self.session_id, self.exercise_id, self.side = session_id, exercise_id, side
         self.source = source
         self.spec = spec
-        self.machine = ExerciseMachine(target=target, goal=goal, rest_angle=spec['rest_angle'],
-                                       raise_angle=spec['raise_angle'], lean_limit=spec['allowed_compensation'])
-        self.filter = SkeletonEMA()
+        # Phone RGB is slower (~5–10 Hz) and noisier — softer EMA gap + angle MA.
+        phone = source == 'phone'
+        self.machine = ExerciseMachine(
+            target=target, goal=goal, rest_angle=spec['rest_angle'],
+            raise_angle=spec['raise_angle'], lean_limit=spec['allowed_compensation'],
+            confidence_limit=0.55 if phone else 0.65,
+            max_gap=2.0 if phone else 1.5,
+        )
+        self.filter = SkeletonEMA(alpha=0.32 if phone else 0.4, max_gap=1.2 if phone else 0.5)
+        self.angle_filter = AngleMovingAverage(window=5) if phone else None
         self.reference = CAMERA_VERTICAL_BASIS
         self.previous_angle = None
         self.previous_time = None
@@ -79,6 +86,8 @@ class VisionPipeline:
                  'sensors': _sensor_labels(snapshot, self.source),
                  'measurement_profile': snapshot.get('capture_profile', self.source),
                  'measurement_geometry': snapshot.get('measurement_geometry', 'rgbd_3d')}
+        if snapshot.get('pose_quality'):
+            extra['pose_quality'] = snapshot['pose_quality']
         people = snapshot.get('people', 0)
         points = snapshot.get('points') or {}
         landmarks = snapshot.get('landmarks2d') or {}
@@ -106,6 +115,8 @@ class VisionPipeline:
             extra['frame_jpeg'] = jpeg_b64(render_rgb(landmarks, self.side, snapshot.get('source', self.source),
                                                      imu_source=_imu_source(snapshot)))
             return self._emit(sample, safety, landmarks, extra)
+        if self.angle_filter is not None:
+            measured['angle'] = self.angle_filter.update(measured['angle'])
         velocity = 0.0
         dt = None
         if self.previous_angle is not None:

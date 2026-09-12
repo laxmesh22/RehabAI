@@ -13,6 +13,7 @@ STUDIO_ACTIONS = (
     'open_patients',
     'open_settings',
     'open_home',
+    'open_history',
     'confirm_tracking',
     'start_session',
 )
@@ -22,6 +23,7 @@ ACTION_SELECTORS = {
     'open_patients': {'hash': '#/patients'},
     'open_settings': {'hash': '#/settings'},
     'open_home': {'hash': '#/app/home'},
+    'open_history': {'hash': '#/app/home', 'scroll': '#dash-history'},
     'confirm_tracking': {'click': '#confirm'},
     'start_session': {'click': '#go'},
 }
@@ -30,8 +32,9 @@ ACTION_PHRASES = {
     'open_patients': ('open patients', 'show patients', 'patient list', 'go to patients', 'patients page'),
     'open_settings': ('open settings', 'open setting', 'go to settings'),
     'open_home': ('open home', 'open dashboard', 'my dashboard', 'show dashboard', 'go home'),
+    'open_history': ('show history', 'past sessions', 'my sessions', 'session history', 'previous sessions'),
     'confirm_tracking': ('confirm tracking', 'start tracking', 'tracking looks good', 'confirm and start'),
-    'start_session': ('start session', 'start rehab', 'begin session', 'start the session'),
+    'start_session': ('start session', 'start rehab', 'begin session', 'start the session', 'record session'),
 }
 
 

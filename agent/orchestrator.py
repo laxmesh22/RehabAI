@@ -1,12 +1,13 @@
-"""One supervisor agent. Tools run first; the LLM never sees the database."""
+"""One supervisor agent. Stored measurements and tools first; the LLM never sees the database."""
 import json
 from agent.prompts.supervisor import SYSTEM_PROMPT
 from agent.tools.clinical import (
-    TOOL_MAP, calculate_patient_progress, compare_sessions, draft_progress_report,
+    calculate_patient_progress, compare_sessions, draft_progress_report,
     draft_rehab_plan, get_assessment_history, get_compensation_events, get_latest_assessment,
     get_patient_profile, get_rom_history, get_session_history,
 )
-from backend.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+from agent.retrieval.grounding import grounded_or_fallback
+from backend.config import ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, ANTHROPIC_MODEL, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 
 
 def classify(question):
@@ -26,6 +27,35 @@ def classify(question):
     return 'progress_analysis'
 
 
+def _public_profile(profile):
+    if not isinstance(profile, dict):
+        return {}
+    return {
+        'affected_side': profile.get('affected_side'),
+        'is_demo': profile.get('is_demo'),
+        'has_clinician_diagnosis_on_file': bool(profile.get('clinician_diagnosis')),
+    }
+
+
+def _drop_identity(value):
+    if isinstance(value, dict):
+        return {
+            key: _drop_identity(item)
+            for key, item in value.items()
+            if key not in ('patient_id', 'full_name', 'mrn', 'email', 'patient_name')
+        }
+    if isinstance(value, list):
+        return [_drop_identity(item) for item in value]
+    return value
+
+
+def _llm_tools(tool_results):
+    safe = _drop_identity(tool_results)
+    if isinstance(safe, dict) and 'profile' in safe:
+        safe['profile'] = _public_profile(safe.get('profile') if isinstance(safe.get('profile'), dict) else {})
+    return safe
+
+
 def run_supervisor(db, patient_id, question, actor_role):
     if actor_role == 'PATIENT' and any(word in question.lower() for word in ('draft', 'approve', 'plan', 'alert')):
         # Patients may ask about their progress, not change treatment.
@@ -33,7 +63,8 @@ def run_supervisor(db, patient_id, question, actor_role):
     profile = get_patient_profile(db, patient_id)
     if profile.get('error'):
         return {'intent': 'error', 'patient_id': patient_id, 'summary': 'Patient record was not found.',
-                'measured_changes': {}, 'alerts': [], 'recommendation': None, 'requires_approval': False}
+                'measured_changes': {}, 'alerts': [], 'recommendation': None, 'requires_approval': False,
+                'llm_used': False, 'rag_used': False, 'citations': []}
     intent = classify(question)
     tool_results = {
         'profile': profile,
@@ -80,11 +111,13 @@ def run_supervisor(db, patient_id, question, actor_role):
         'requires_approval': intent in ('rehab_planning', 'report_generation'),
         'draft': drafted,
         'llm_used': bool(llm_summary),
+        'rag_used': False,
+        'citations': [],
         'tool_trace': list(tool_results.keys()),
     }
 
 
-def deterministic_summary(question, intent, tools):
+def deterministic_summary(question, intent, tools, retrieved=None):
     profile = tools['profile']
     progress = tools['progress']
     demo = ' Demo/synthetic records are included and labelled.' if profile.get('is_demo') or progress.get('demo_records_present') else ''
@@ -130,27 +163,83 @@ def deterministic_summary(question, intent, tools):
     if compare:
         extra = f" Compared stored assessments {compare['previous']['id']} and {compare['current']['id']}."
     return ('Stored valid measurements for this patient: ' + '; '.join(bits) + '.'
-            + extra + ' The camera does not diagnose adhesive capsulitis. Clinical review remains required.' + demo)
+            + extra + ' The camera does not diagnose adhesive capsulitis. Clinical review remains required.'
+            + demo)
+
+
+def _metrics_from_tools(tool_results):
+    metrics = {}
+
+    def walk(obj):
+        if isinstance(obj, dict):
+            for value in obj.values():
+                walk(value)
+        elif isinstance(obj, list):
+            for item in obj[:12]:
+                walk(item)
+        elif isinstance(obj, bool):
+            return
+        elif isinstance(obj, (int, float)):
+            metrics[f'n{len(metrics)}'] = obj
+
+    walk(tool_results)
+    return metrics
 
 
 def maybe_llm(question, tool_results):
-    if not LLM_BASE_URL:
+    safe = _llm_tools(tool_results)
+    payload = json.dumps({'question': question, 'tools': safe}, default=str)[:12000]
+    text = _claude_summary(payload)
+    if not text and LLM_BASE_URL:
+        try:
+            import httpx
+            body = {
+                'model': LLM_MODEL,
+                'temperature': 0,
+                'messages': [
+                    {'role': 'system', 'content': SYSTEM_PROMPT},
+                    {'role': 'user', 'content': payload},
+                ],
+            }
+            headers = {'Content-Type': 'application/json'}
+            if LLM_API_KEY:
+                headers['Authorization'] = 'Bearer ' + LLM_API_KEY
+            response = httpx.post(LLM_BASE_URL.rstrip('/') + '/v1/chat/completions', json=body, headers=headers, timeout=20)
+            response.raise_for_status()
+            text = response.json()['choices'][0]['message']['content']
+        except Exception:
+            text = None
+    if not text:
+        return None
+    spoken, ok, _reason = grounded_or_fallback(text, [], _metrics_from_tools(tool_results))
+    return spoken if ok else None
+
+
+def _claude_summary(payload: str):
+    if not ANTHROPIC_API_KEY:
         return None
     try:
         import httpx
-        body = {
-            'model': LLM_MODEL,
-            'temperature': 0,
-            'messages': [
-                {'role': 'system', 'content': SYSTEM_PROMPT},
-                {'role': 'user', 'content': json.dumps({'question': question, 'tools': tool_results}, default=str)[:12000]},
-            ],
-        }
-        headers = {'Content-Type': 'application/json'}
-        if LLM_API_KEY:
-            headers['Authorization'] = 'Bearer ' + LLM_API_KEY
-        response = httpx.post(LLM_BASE_URL.rstrip('/') + '/v1/chat/completions', json=body, headers=headers, timeout=20)
+        response = httpx.post(
+            f'{ANTHROPIC_BASE_URL}/v1/messages',
+            headers={
+                'x-api-key': ANTHROPIC_API_KEY,
+                'anthropic-version': '2023-06-01',
+                'content-type': 'application/json',
+            },
+            json={
+                'model': ANTHROPIC_MODEL,
+                'max_tokens': 280,
+                'system': SYSTEM_PROMPT,
+                'messages': [{'role': 'user', 'content': payload}],
+            },
+            timeout=12,
+        )
         response.raise_for_status()
-        return response.json()['choices'][0]['message']['content']
+        raw = ''
+        for item in (response.json().get('content') or []):
+            if isinstance(item, dict) and item.get('type') == 'text':
+                raw += str(item.get('text') or '')
+        return raw.strip()[:1200] or None
     except Exception:
         return None

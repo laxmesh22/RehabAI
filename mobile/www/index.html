@@ -4,25 +4,35 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>RehabAI · Shoulder rehabilitation studio</title>
+  <!-- System fonts first for fast mobile boot; Google Fonts optional and non-blocking. -->
+  <link rel="stylesheet" href="./style.css?v=nura34">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/ui/style.css?v=nura17">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
   <script type="importmap">
   {
     "imports": {
-      "three": "https://unpkg.com/three@0.160.1/build/three.module.js"
+      "three": "./vendor/three.module.js"
     }
   }
   </script>
 </head>
 <body>
-  <script>if (!/consumer=1/.test(location.search)) { location.replace('/?consumer=1#/app'); }</script>
+  <script>
+    window.REHABAI_API_ORIGIN = "https://rehabai-api-production.up.railway.app";
+    window.REHABAI_API_FALLBACKS = ["http://172.16.6.7:8000"];
+    window.REHABAI_UI_BASE = './';
+    window.REHABAI_PACKAGED = true;
+    if (!/consumer=1/.test(location.search)) {
+      location.replace(location.pathname + '?consumer=1' + (location.hash || '#/app'));
+    }
+  </script>
+
   <div id="app"><p class="boot">Loading RehabAI…</p></div>
-  <script type="module" src="/ui/guide_follow.js?v=31"></script>
-  <script src="/ui/pain_scale.js?v=31" defer></script>
-  <script src="/ui/intake.js?v=31" defer></script>
-  <script src="/ui/voice_agent.js?v=31" defer></script>
-  <script src="/ui/app.js?v=31" defer></script>
+  <script src="./pain_scale.js?v=56" defer></script>
+  <script src="./intake.js?v=59" defer></script>
+  <script src="./coach_avatar.js?v=62" defer></script>
+  <script src="./voice_agent.js?v=62" defer></script>
+  <script src="./app.js?v=63" defer></script>
 </body>
 </html>

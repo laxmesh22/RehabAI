@@ -70,6 +70,7 @@ def get_rom_history(db, patient_id):
     rows = db.scalars(select(ROMMeasurement).where(ROMMeasurement.patient_id == patient_id,
                                                    ROMMeasurement.valid.is_(True)).order_by(ROMMeasurement.recorded_at)).all()
     return [{'movement': r.movement, 'value': r.value, 'confidence': r.confidence, 'valid': r.valid,
+             'assessment_id': r.assessment_id, 'session_id': r.session_id,
              'recorded_at': r.recorded_at.isoformat() + 'Z', 'source': r.source, 'model_version': r.model_version}
             for r in rows]
 
@@ -142,27 +143,54 @@ def _delta_from_values(values, extras=None):
     return row
 
 
+def _latest_source_series(rows):
+    """Choose the newest measurement protocol and compare only within that protocol."""
+    if not rows:
+        return [], None, []
+    available = list(dict.fromkeys((row.get('source') or 'unknown') for row in rows))
+    selected = rows[-1].get('source') or 'unknown'
+    return [row for row in rows if (row.get('source') or 'unknown') == selected], selected, available
+
+
 def calculate_patient_progress(db, patient_id):
     history = get_assessment_history(db, patient_id)
     rom = get_rom_history(db, patient_id)
     pain_rows = get_pain_history(db, patient_id)
     sessions = get_session_history(db, patient_id)
     valid = [row for row in history if row['flexion_max'] is not None or row['abduction_max'] is not None]
-    abd_rom = [row for row in rom if row['movement'] == 'abduction']
-    flex_rom = [row for row in rom if row['movement'] == 'flexion']
+    abd_all = [row for row in rom if row['movement'] == 'abduction']
+    flex_all = [row for row in rom if row['movement'] == 'flexion']
+    abd_rom, abd_source, abd_sources = _latest_source_series(abd_all)
+    flex_rom, flex_source, flex_sources = _latest_source_series(flex_all)
     pain_move = [row['movement'] for row in pain_rows if row.get('movement') is not None]
     if not pain_move:
         pain_move = [row['pain_after'] for row in sessions if row.get('pain_after') is not None]
     pain_rest = [row['rest'] for row in pain_rows if row.get('rest') is not None]
     abd = _delta_from_values([row['value'] for row in abd_rom])
     if abd is None:
-        abd = _delta_from_values([row['abduction_max'] for row in valid if row.get('abduction_max') is not None])
+        abd_assessments, abd_source, abd_sources = _latest_source_series(
+            [row for row in valid if row.get('abduction_max') is not None]
+        )
+        abd = _delta_from_values([row['abduction_max'] for row in abd_assessments])
     flex = _delta_from_values([row['value'] for row in flex_rom])
     if flex is None:
-        flex = _delta_from_values([row['flexion_max'] for row in valid if row.get('flexion_max') is not None])
+        flex_assessments, flex_source, flex_sources = _latest_source_series(
+            [row for row in valid if row.get('flexion_max') is not None]
+        )
+        flex = _delta_from_values([row['flexion_max'] for row in flex_assessments])
     pain = _delta_from_values(pain_move)
     rest = _delta_from_values(pain_rest)
-    torso = _delta_from_values([row['torso_compensation'] for row in valid if row.get('torso_compensation') is not None])
+    torso_rows, torso_source, torso_sources = _latest_source_series(
+        [row for row in valid if row.get('torso_compensation') is not None]
+    )
+    torso = _delta_from_values([row['torso_compensation'] for row in torso_rows])
+    all_sources = list(dict.fromkeys(abd_sources + flex_sources + torso_sources))
+    mixed_protocols = len(all_sources) > 1
+    comparison_note = (
+        'Multiple measurement protocols are stored. ROM deltas use only the newest protocol for each movement.'
+        if mixed_protocols else
+        'ROM deltas compare measurements from the same stored protocol.'
+    )
     if not abd and not flex and not pain:
         return {
             'error': 'no_valid_measurements',
@@ -175,21 +203,26 @@ def calculate_patient_progress(db, patient_id):
             'demo_records_present': any(row.get('is_demo') for row in history + sessions),
             'recovery_percentage': None,
             'recovery_percentage_note': 'No recovery percentage is defined. Changes are reported in native units only.',
+            'series_sources': {'abduction': abd_source, 'flexion': flex_source, 'torso_compensation': torso_source},
+            'rom_sources_available': {'abduction': abd_sources, 'flexion': flex_sources},
+            'mixed_measurement_protocols': mixed_protocols,
+            'comparison_note': comparison_note,
         }
-    latest_rom = (abd_rom or flex_rom or [None])[-1]
+    primary_rom = abd_rom or flex_rom
     baseline = valid[0] if valid else None
     current = valid[-1] if valid else None
     demo = any(row.get('is_demo') for row in history + sessions)
+    primary_source = abd_source or flex_source
     sources = {
-        'baseline': (abd_rom[0]['source'] if abd_rom else None) or (None if baseline is None else baseline.get('source')),
-        'current': (latest_rom or {}).get('source') if isinstance(latest_rom, dict) else (None if current is None else current.get('source')),
+        'baseline': primary_source,
+        'current': primary_source,
     }
     return {
         'patient_id': patient_id,
-        'baseline_assessment_id': None if baseline is None else baseline['id'],
-        'current_assessment_id': None if current is None else current['id'],
-        'baseline_at': (abd_rom[0]['recorded_at'] if abd_rom else None) or (None if baseline is None else baseline['created_at']),
-        'current_at': (abd_rom[-1]['recorded_at'] if abd_rom else None) or (None if current is None else current['created_at']),
+        'baseline_assessment_id': (primary_rom[0].get('assessment_id') if primary_rom else None) or (None if baseline is None else baseline['id']),
+        'current_assessment_id': (primary_rom[-1].get('assessment_id') if primary_rom else None) or (None if current is None else current['id']),
+        'baseline_at': (primary_rom[0]['recorded_at'] if primary_rom else None) or (None if baseline is None else baseline['created_at']),
+        'current_at': (primary_rom[-1]['recorded_at'] if primary_rom else None) or (None if current is None else current['created_at']),
         'abduction': abd,
         'flexion': flex,
         'pain_movement': pain,
@@ -197,6 +230,10 @@ def calculate_patient_progress(db, patient_id):
         'torso_compensation': torso,
         'sources': sources,
         'latest_source': sources.get('current'),
+        'series_sources': {'abduction': abd_source, 'flexion': flex_source, 'torso_compensation': torso_source},
+        'rom_sources_available': {'abduction': abd_sources, 'flexion': flex_sources},
+        'mixed_measurement_protocols': mixed_protocols,
+        'comparison_note': comparison_note,
         'point_count': {
             'abduction': 0 if abd is None else abd.get('n'),
             'flexion': 0 if flex is None else flex.get('n'),
@@ -212,11 +249,30 @@ def compare_sessions(db, session_a, session_b):
     a, b = db.get(Session, session_a), db.get(Session, session_b)
     if a is None or b is None:
         return {'error': 'session_not_found'}
+    same_patient = a.patient_id == b.patient_id
+    same_protocol = (a.source or 'unknown') == (b.source or 'unknown')
+    same_side = a.side == b.side
+    same_exercise = a.exercise_id == b.exercise_id
+    comparable = same_patient and same_protocol and same_side and same_exercise
+    reason = None
+    if not comparable:
+        differences = []
+        if not same_patient:
+            differences.append('patient')
+        if not same_protocol:
+            differences.append('measurement source')
+        if not same_side:
+            differences.append('side')
+        if not same_exercise:
+            differences.append('exercise')
+        reason = 'Sessions use different ' + ', '.join(differences) + ' and are not used for a clinical progress delta.'
     return {
         'a': _session(a),
         'b': _session(b),
-        'peak_change': None if a.peak_angle is None or b.peak_angle is None else round(b.peak_angle - a.peak_angle, 1),
-        'pain_change': None if a.pain_after is None or b.pain_after is None else b.pain_after - a.pain_after,
+        'comparison_valid': comparable,
+        'comparison_reason': reason,
+        'peak_change': None if not comparable or a.peak_angle is None or b.peak_angle is None else round(b.peak_angle - a.peak_angle, 1),
+        'pain_change': None if not comparable or a.pain_after is None or b.pain_after is None else b.pain_after - a.pain_after,
     }
 
 
@@ -250,7 +306,11 @@ def draft_progress_report(db, patient_id):
         'alerts': [],
         'recommendation': 'continue clinician-approved plan',
         'requires_approval': True,
-        'source_disclaimer': 'Only stored valid measurements were used. Missing values were not invented.',
+        'source_disclaimer': (
+            'Only stored valid measurements were used. Missing values were not invented. '
+            + progress.get('comparison_note', '')
+        ).strip(),
+        'measurement_protocols': progress.get('series_sources'),
         'demo_records_present': progress.get('demo_records_present'),
     }
     report = AIReport(id=new_id('RPT-'), patient_id=patient_id, kind='progress', payload=payload,

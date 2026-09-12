@@ -1,0 +1,5 @@
+# Python 3.12 only — MediaPipe has no 3.13/3.14 wheels.
+opencv-python>=4.8.0,<5
+mediapipe==0.10.21
+matplotlib>=3.8
+sounddevice>=0.4.4

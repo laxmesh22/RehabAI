@@ -60,7 +60,11 @@ def persist_finished_session(db, session_row, patient, summary, history, finish_
         db.add(PainScore(id=new_id('PAIN-'), patient_id=patient.id, session_id=session_row.id,
                          rest=rest_pain, movement=movement_pain, context='session'))
     movement = _movement(session_row.exercise_id)
-    valid_rom = session_row.coverage is not None and session_row.coverage >= 50 and (session_row.peak_angle or 0) > 0
+    valid_rom = (
+        session_row.coverage is not None and session_row.coverage >= 50
+        and (session_row.peak_angle or 0) > 0
+        and summary['safety']['level'] not in ('PAUSE', 'BLOCK')
+    )
     wrote_rom = False
     if valid_rom:
         db.add(ROMMeasurement(id=new_id('ROM-'), patient_id=patient.id, session_id=session_row.id, movement=movement,

@@ -7,6 +7,7 @@ from typing import Any
 
 from backend.config import STORAGE_DIR
 from backend.intake import INTAKE_FIELDS, empty_intake
+from backend.profile import empty_profile, normalize_profile
 
 
 def memory_path(patient_id: str) -> Path:
@@ -15,9 +16,11 @@ def memory_path(patient_id: str) -> Path:
 
 def default_memory() -> dict[str, Any]:
     return {
-        'version': 1,
+        'version': 2,
+        'profile': empty_profile(),
         'intake': empty_intake(),
         'report_phase': 'needed',  # needed | done | skipped
+        'talk_skipped': False,
         'reports': [],
         'last_peak_abduction': None,
         'last_peak_flexion': None,
@@ -25,6 +28,13 @@ def default_memory() -> dict[str, Any]:
         'last_session_id': None,
         'last_source': None,
         'session_summaries': [],
+        'talk_turns': [],
+        'rag_summary': {
+            'pacing_hint': 'unknown',
+            'rom_trend': 'unknown',
+            'concerns': [],
+            'last_intents': [],
+        },
         'updated_at': None,
     }
 
@@ -43,8 +53,11 @@ def load_memory(patient_id: str) -> dict[str, Any]:
     base.update({k: row.get(k, base.get(k)) for k in base})
     intake = row.get('intake') if isinstance(row.get('intake'), dict) else empty_intake()
     base['intake'] = {**empty_intake(), **intake}
+    base['profile'] = normalize_profile(row.get('profile') if isinstance(row.get('profile'), dict) else {})
     summaries = row.get('session_summaries')
     base['session_summaries'] = summaries if isinstance(summaries, list) else []
+    turns = row.get('talk_turns')
+    base['talk_turns'] = turns if isinstance(turns, list) else []
     reports = row.get('reports')
     base['reports'] = reports if isinstance(reports, list) else []
     phase = row.get('report_phase')
@@ -60,10 +73,15 @@ def save_memory(patient_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         row.update(payload)
     if not isinstance(row.get('intake'), dict):
         row['intake'] = empty_intake()
+    row['profile'] = normalize_profile(row.get('profile') if isinstance(row.get('profile'), dict) else {})
     if not isinstance(row.get('session_summaries'), list):
         row['session_summaries'] = []
+    if not isinstance(row.get('talk_turns'), list):
+        row['talk_turns'] = []
     if not isinstance(row.get('reports'), list):
         row['reports'] = []
+    if not isinstance(row.get('rag_summary'), dict):
+        row['rag_summary'] = default_memory()['rag_summary']
     if row.get('report_phase') not in ('needed', 'done', 'skipped'):
         row['report_phase'] = 'needed'
     from backend.database.models import utcnow
@@ -89,6 +107,18 @@ def append_report(patient_id: str, report: dict[str, Any], phase: str = 'done') 
 def skip_report_phase(patient_id: str) -> dict[str, Any]:
     row = load_memory(patient_id)
     row['report_phase'] = 'skipped'
+    return save_memory(patient_id, row)
+
+
+def skip_talk_phase(patient_id: str) -> dict[str, Any]:
+    """Unlock consumer home without completing Talk. Does not invent pain/ROM values."""
+    row = load_memory(patient_id)
+    intake = row.get('intake') or empty_intake()
+    intake['confirmed'] = True
+    intake['source'] = 'talk_skip'
+    row['intake'] = intake
+    row['report_phase'] = 'skipped'
+    row['talk_skipped'] = True
     return save_memory(patient_id, row)
 
 

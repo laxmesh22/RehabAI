@@ -29,6 +29,10 @@ class IntakeParseTests(unittest.TestCase):
         stop = parse_utterance('stop, it hurts a lot', 'pain_movement')
         self.assertEqual(stop['intent'], 'safety_pause')
         self.assertEqual(stop['safety'], 'PAUSE')
+        numb = parse_utterance('I have numbness in the fingers', 'pain_movement')
+        self.assertEqual(numb['intent'], 'safety_pause')
+        number = parse_utterance('what number should I say', 'pain_rest')
+        self.assertNotEqual(number['intent'], 'safety_pause')
 
     def test_does_not_invent_a_number(self):
         row = parse_utterance('my shoulder feels frozen', 'pain_rest')

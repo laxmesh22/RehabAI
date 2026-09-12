@@ -2,7 +2,7 @@
 
 Talk-first patient shell. Same mint UI as the hospital studio, without the clinician rail.
 
-This is **not** a diagnosis service. Demo patient P102 stays labelled demo/synthetic. Phone camera ROM is available only when a local `REHABAI_POSE_MODEL` or hosted `REHABAI_PHONE_INFERENCE_URL` is configured. The UI offers phone and simulation as separate choices; neither silently becomes the other.
+This is **not** a diagnosis service. Phone camera ROM is available when OpenCV MediaPipe pose is ready (`REHABAI_POSE_KIND=opencv` via local `.venv` / pose sidecar, a `REHABAI_POSE_MODEL`, or hosted `REHABAI_PHONE_INFERENCE_URL`). The UI offers phone and simulation as separate choices; neither silently becomes the other.
 
 ## Hosted backend (Railway)
 

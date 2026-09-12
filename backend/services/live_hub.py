@@ -18,6 +18,7 @@ class LiveHub:
     def __init__(self):
         self.lock = threading.RLock()
         self.sessions = {}
+        self.abandoned_ids = []
 
     def start(self, session_id, patient_id, exercise_id, side, target, goal, source=None, consent=False):
         source = source or MEASUREMENT_SOURCE
@@ -26,10 +27,12 @@ class LiveHub:
         if source == 'phone':
             from edge.phone_capture import phone_pose_available
             if not phone_pose_available():
-                raise ValueError('Phone capture requires REHABAI_POSE_MODEL or REHABAI_PHONE_INFERENCE_URL')
+                raise ValueError('Phone capture requires REHABAI_POSE_KIND=opencv (or a pose model / inference URL)')
+        # Single-station: clear any leftover calibrating/running session (refresh / crash).
+        self.stop_active(except_id=session_id)
         with self.lock:
             for item in self.sessions.values():
-                if item['status'] in ('calibrating', 'running'):
+                if item['status'] in ('calibrating', 'running') and item['session_id'] != session_id:
                     raise ValueError('Another live session is already running on this station')
             imu = open_imu(source, IMU_TRANSPORT, IMU_UDP_HOST, IMU_UDP_PORT, IMU_SERIAL, IMU_BAUD, IMU_PLACEMENTS)
             if IMU_REQUIRED and source == 'live' and imu is None:
@@ -52,7 +55,7 @@ class LiveHub:
                 'session_id': session_id, 'patient_id': patient_id, 'exercise_id': exercise_id, 'side': side,
                 'target': target, 'goal': goal, 'source': source, 'consent': consent, 'status': 'calibrating',
                 'pipeline': pipeline, 'actor': actor, 'capture': capture, 'phone_estimator': phone_estimator,
-                'imu': imu, 'history': [], 'fault': 'none',
+                'imu': imu, 'history': [], 'history_offset': 0, 'fault': 'none',
                 'stop': threading.Event(), 'started': now, 'motion_t0': now, 'blocked': False,
                 'preview_jpeg': None, 'preview_b64': None,
                 'phone_lock': threading.Lock(), 'last_phone_frame_at': None,
@@ -63,12 +66,40 @@ class LiveHub:
             thread.start()
             return state
 
+    def stop_active(self, except_id=None):
+        """Stop calibrating/running sessions so a station can start fresh after a refresh."""
+        with self.lock:
+            active = [
+                sid for sid, item in self.sessions.items()
+                if item['status'] in ('calibrating', 'running', 'blocked', 'finishing')
+                and sid != except_id
+            ]
+            self.abandoned_ids = list(active)
+        for sid in active:
+            try:
+                self.finish(sid)
+            except Exception:
+                with self.lock:
+                    state = self.sessions.pop(sid, None)
+                if state is not None:
+                    try:
+                        state['stop'].set()
+                    except Exception:
+                        pass
+                    for key in ('phone_estimator', 'capture', 'imu'):
+                        resource = state.get(key)
+                        if resource is not None and hasattr(resource, 'close'):
+                            try:
+                                resource.close()
+                            except Exception:
+                                pass
+
     def ingest_phone_frame(self, session_id, jpeg_bytes: bytes):
         if not jpeg_bytes:
             raise ValueError('Empty phone frame')
         from edge.phone_capture import phone_pose_available
         if not phone_pose_available():
-            raise ValueError('Phone capture requires REHABAI_POSE_MODEL or REHABAI_PHONE_INFERENCE_URL')
+            raise ValueError('Phone capture requires REHABAI_POSE_KIND=opencv (or a pose model / inference URL)')
         with self.lock:
             state = self.sessions.get(session_id)
             if state is None:
@@ -112,6 +143,7 @@ class LiveHub:
             state['history'].append(row)
             if len(state['history']) > 4000:
                 del state['history'][:1000]
+                state['history_offset'] += 1000
             if row.get('safety', {}).get('level') == 'BLOCK':
                 state['blocked'] = True
                 state['status'] = 'blocked'
@@ -159,6 +191,17 @@ class LiveHub:
             if items:
                 items[-1] = _with_preview(self.sessions[session_id], items[-1])
             return items
+
+    def history_since(self, session_id, sequence):
+        """Return unseen telemetry without copying the complete session on every poll."""
+        with self.lock:
+            state = self.sessions[session_id]
+            offset = state.get('history_offset', 0)
+            start = max(0, int(sequence) - offset)
+            items = list(state['history'][start:])
+            if items:
+                items[-1] = _with_preview(state, items[-1])
+            return items, offset + len(state['history'])
 
     def preview_jpeg(self, session_id):
         with self.lock:
@@ -233,7 +276,25 @@ class LiveHub:
                 'duration': round(time.monotonic() - state['started'], 1),
                 'samples': len(history),
             }
+            self.sessions.pop(session_id, None)
             return summary, history
+
+    def pause(self, session_id):
+        """Stop counting without saving. Debrief/finish can still persist the samples."""
+        with self.lock:
+            state = self.sessions.get(session_id)
+            if state is None:
+                raise KeyError(session_id)
+            if state['status'] in ('stopped', 'finishing'):
+                return
+            state['blocked'] = True
+            state['stop'].set()
+
+    def take_abandoned(self):
+        with self.lock:
+            ids = list(getattr(self, 'abandoned_ids', []) or [])
+            self.abandoned_ids = []
+            return ids
 
     def _run(self, state):
         while not state['stop'].is_set():

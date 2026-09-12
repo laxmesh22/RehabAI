@@ -23,6 +23,7 @@ rebind(DATABASE_URL)
 def init_db():
     Base.metadata.create_all(engine)
     _ensure_session_columns()
+    _ensure_user_columns()
 
 
 def _ensure_session_columns():
@@ -40,6 +41,17 @@ def _ensure_session_columns():
     with engine.begin() as conn:
         for sql in statements:
             conn.execute(text(sql))
+
+
+def _ensure_user_columns():
+    inspector = inspect(engine)
+    if 'users' not in inspector.get_table_names():
+        return
+    existing = {col['name'] for col in inspector.get_columns('users')}
+    if 'last_login_at' in existing:
+        return
+    with engine.begin() as conn:
+        conn.execute(text('ALTER TABLE users ADD COLUMN last_login_at DATETIME'))
 
 
 def get_db():

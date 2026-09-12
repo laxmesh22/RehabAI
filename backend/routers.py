@@ -1,8 +1,10 @@
 import base64
+import html
 import json
 import uuid
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
@@ -11,7 +13,8 @@ from backend.access import can_treat, can_view_patient, load_patient
 from backend.auth import create_token, current_user, hash_password, new_id, require_roles, verify_password, decode_token
 from backend.config import (
     DATABASE_URL, IMU_PLACEMENTS, IMU_REQUIRED, IMU_SERIAL, IMU_TRANSPORT, JWT_SECRET_IS_DEFAULT,
-    LLM_BASE_URL, MEASUREMENT_SOURCE, PHONE_FRAME_MAX_BYTES, POSE_MODEL, VOICE_STT,
+    LLM_BASE_URL, MEASUREMENT_SOURCE, PHONE_FRAME_MAX_BYTES, PHONE_INFERENCE_URL, POSE_KIND,
+    POSE_MODEL, VOICE_STT,
 )
 from backend.database.models import (
     AIReport, Alert, Appointment, Assessment, AuditLog, ClinicalNote, CompensationEvent,
@@ -25,6 +28,9 @@ from edge.imu.device import describe_imu
 from edge.overlay import opencv_available
 from agent.orchestrator import run_supervisor
 from agent.guide_caption import caption_guide
+from agent.exercise_coach import adaptive_coach
+from agent.knowledge import public_ai_status
+from agent.session_intel import record_session_insight, remember_concern
 from agent.tools.clinical import (
     calculate_patient_progress, get_approved_exercise_library, get_pain_history, get_rom_history,
     get_compensation_events, get_session_history,
@@ -32,7 +38,7 @@ from agent.tools.clinical import (
 from edge.exercises.library import get_exercise
 from backend.intake import (
     INTAKE_FIELDS, apply_confirmed_value, empty_intake, merge_finish_intake,
-    missing_intake_fields, script_payload,
+    missing_intake_fields, scores_from_intake, script_payload,
 )
 from backend.voice import (
     VoiceProviderError, parse_questionnaire_reply, synthesize_speech, transcribe_audio, voice_status,
@@ -41,10 +47,11 @@ from agent.live_voice import live_reply, sanitize_context
 from agent.consumer_voice import consumer_reply, greeting_prompt
 from backend.memory import (
     append_report, load_memory, merge_session_into_memory, report_phase_complete,
-    save_memory, skip_report_phase,
+    save_memory, skip_report_phase, skip_talk_phase,
 )
 from backend.ocr import run_report_ocr
 from agent.retrieval import patient_memory_for_agent
+from backend.profile import display_first_name, normalize_profile, profile_complete
 from edge.phone_capture import phone_pose_available
 from backend.exports import build_patient_record, patient_record_json, patient_record_xlsx
 
@@ -162,6 +169,23 @@ class GuideCaptionBody(BaseModel):
     movement: str | None = None
 
 
+class GuideCoachBody(BaseModel):
+    language: str = 'en-IN'
+    exercise: str | None = None
+    movement: str | None = None
+    phase: str | None = None
+    safety: str | None = None
+    target: float | None = None
+    angle: float | None = None
+    peak: float | None = None
+    reps: int | None = None
+    goal: int | None = None
+    feedback: str = ''
+    patient_said: str = ''
+    guide_cue: str = ''
+    avatar_demo: str | None = None
+
+
 def audit(db, user, action, resource, resource_id, detail=None):
     db.add(AuditLog(id=new_id('AUD-'), actor_id=None if user is None else user.id,
                     action=action, resource=resource, resource_id=resource_id, detail=detail or {}))
@@ -191,13 +215,16 @@ def health():
         'imu': describe_imu(MEASUREMENT_SOURCE, IMU_TRANSPORT, IMU_SERIAL, IMU_REQUIRED, IMU_PLACEMENTS),
         'sensors': ['realsense', 'arm_imu'],
         'guide': {
-            'rig': 'mixamo',
+            'rig': 'follow_avatar',
             'driven_by': 'telemetry_not_llm',
             'optional_glb': '/ui/models/guide.glb',
             'source_repo': 'hmthanh/3d-human-model',
         },
         'voice': voice_status(),
+        'ai': public_ai_status(),
         'phone_pose_available': phone_pose_available(),
+        'pose_kind': POSE_KIND,
+        'phone_inference_url_configured': bool(PHONE_INFERENCE_URL),
         'consumer_app': True,
     }
 
@@ -207,13 +234,84 @@ def guide_caption(body: GuideCaptionBody, user: User = Depends(current_user)):
     return caption_guide(body.model_dump())
 
 
+@router.post('/guide/coach')
+async def guide_coach(body: GuideCoachBody, user: User = Depends(current_user)):
+    """Adaptive spoken coach from measured session metrics only."""
+    return await adaptive_coach(body.model_dump())
+
+
 @router.post('/auth/login')
 def login(body: LoginBody, db: Session = Depends(get_db)):
     user = db.scalars(select(User).where(User.email == body.email)).first()
     if user is None or not verify_password(body.password, user.password_hash):
         raise HTTPException(401, 'Unknown email or password')
-    audit(db, user, 'login', 'user', user.id)
+    _record_login(db, user, source='password')
     return {'token': create_token(user), 'user': _user(user)}
+
+
+class RegisterPatientBody(BaseModel):
+    full_name: str | None = None
+    email: str | None = None
+    password: str | None = None
+
+
+@router.post('/consumer/bootstrap')
+def consumer_bootstrap(body: RegisterPatientBody | None = None, db: Session = Depends(get_db)):
+    """Create an empty patient account (no seed ROM/pain). Used by the consumer app."""
+    from backend.seed import create_empty_patient_account
+    payload = body or RegisterPatientBody()
+    try:
+        created = create_empty_patient_account(
+            db,
+            full_name=(payload.full_name or 'New patient').strip() or 'New patient',
+            email=(payload.email or '').strip() or None,
+            password=(payload.password or '').strip() or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    user = created['user']
+    patient = created['patient']
+    audit(db, user, 'consumer_bootstrap', 'patient', patient.id, {
+        'email': created['email'],
+        'source': 'consumer_app',
+        'hospital_id': patient.hospital_id,
+    })
+    _record_login(db, user, source='consumer_bootstrap', patient_id=patient.id)
+    db.commit()
+    return {
+        'token': create_token(user),
+        'user': _user(user),
+        'patient_id': patient.id,
+        'email': created['email'],
+        'password': created['password'],
+        'is_demo': False,
+    }
+
+
+@router.post('/auth/touch')
+def auth_touch(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Record patient app open when JWT is reused (no password re-entry)."""
+    patient = None
+    if user.role == 'PATIENT':
+        patient = db.scalars(select(Patient).where(Patient.user_id == user.id)).first()
+    now = utcnow()
+    previous = user.last_login_at
+    should_audit = previous is None or (now - previous).total_seconds() >= 1800
+    user.last_login_at = now
+    if should_audit:
+        detail = {'source': 'app_resume', 'role': user.role}
+        if patient is not None:
+            detail['patient_id'] = patient.id
+        audit(db, user, 'login', 'patient' if patient else 'user',
+              patient.id if patient else user.id, detail)
+    return {
+        'ok': True,
+        'last_login_at': user.last_login_at.isoformat() + 'Z',
+        'audited': should_audit,
+        'patient_id': None if patient is None else patient.id,
+    }
 
 
 @router.get('/me')
@@ -241,19 +339,33 @@ def dashboard(user: User = Depends(current_user), db: Session = Depends(get_db))
     rom = get_rom_history(db, focus.id) if focus else []
     pain_series = get_pain_history(db, focus.id) if focus else []
     progress = calculate_patient_progress(db, focus.id) if focus else {}
-    abd_series = [row for row in rom if row.get('movement') == 'abduction']
-    flex_series = [row for row in rom if row.get('movement') == 'flexion']
-    ordered = _patients_by_activity(patients, sessions, assessments)
+    series_sources = progress.get('series_sources') or {}
+    abd_source = series_sources.get('abduction')
+    flex_source = series_sources.get('flexion')
+    abd_series = [row for row in rom if row.get('movement') == 'abduction' and
+                  (abd_source is None or row.get('source') == abd_source)]
+    flex_series = [row for row in rom if row.get('movement') == 'flexion' and
+                   (flex_source is None or row.get('source') == flex_source)]
+    ordered = _patients_by_activity(patients, sessions, assessments, db)
     if focus:
         ordered = [focus] + [p for p in ordered if p.id != focus.id]
+    consumer_patients = [p for p in patients if p.user_id]
+    consumer_logins_today = _consumer_login_events(db, user.hospital_id, since=today)
     return {
         'today_patients': len({s.patient_id for s in sessions if s.started_at.date() == today}),
         'assessments_today': len(assessments_today),
         'sessions_completed_today': len(completed_today),
         'patients_requiring_review': len({a.patient_id for a in review if a.patient_id}),
         'average_adherence': None if not adherence else round(100 * sum(adherence) / len(adherence), 1),
-        'recent_patients': [_patient(p) for p in ordered[:8]],
-        'focus_patient': None if focus is None else _patient(focus),
+        'consumer_patients': len(consumer_patients),
+        'consumer_signups_today': sum(
+            1 for p in consumer_patients
+            if p.created_at and p.created_at.date() == today
+        ),
+        'consumer_logins_today': len(consumer_logins_today),
+        'recent_patients': [_patient(p, db) for p in ordered[:8]],
+        'recent_consumer_logins': consumer_logins_today[:12],
+        'focus_patient': None if focus is None else _patient(focus, db),
         'abduction_series': abd_series,
         'flexion_series': flex_series,
         'pain_series': pain_series,
@@ -267,7 +379,7 @@ def dashboard(user: User = Depends(current_user), db: Session = Depends(get_db))
 
 @router.get('/patients')
 def list_patients(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    return [_patient(p) for p in _visible_patients(db, user)]
+    return [_patient(p, db) for p in _visible_patients(db, user)]
 
 
 @router.post('/patients')
@@ -286,7 +398,7 @@ def create_patient(body: PatientBody, user: User = Depends(require_roles('PHYSIO
     db.add(patient)
     audit(db, user, 'create_patient', 'patient', patient.id)
     db.flush()
-    return _patient(patient)
+    return _patient(patient, db)
 
 
 @router.get('/patients/{patient_id}')
@@ -294,7 +406,11 @@ def get_patient(patient_id: str, user: User = Depends(current_user), db: Session
     patient = load_patient(db, user, patient_id)
     audit(db, user, 'view_patient', 'patient', patient_id)
     progress = calculate_patient_progress(db, patient_id)
-    return {**_patient(patient), 'progress': progress}
+    return {
+        **_patient(patient, db),
+        'progress': progress,
+        'recent_activity': _patient_activity(db, patient, limit=12),
+    }
 
 
 @router.get('/patients/{patient_id}/export.json')
@@ -328,7 +444,7 @@ def create_assessment(patient_id: str, body: AssessmentBody,
     patient = load_patient(db, user, patient_id)
     if not can_treat(user, patient):
         raise HTTPException(403, 'Not authorised to record assessments')
-    source, model, flexion, abduction, compensation, confidence, smoothness = MEASUREMENT_SOURCE, 'manual-entry', body.flexion_max, body.abduction_max, body.torso_compensation, body.avg_confidence, body.smoothness
+    source, model, flexion, abduction, compensation, confidence, smoothness = 'manual', 'manual-entry', body.flexion_max, body.abduction_max, body.torso_compensation, body.avg_confidence, body.smoothness
     if body.session_id:
         session = db.get(RehabSession, body.session_id)
         if session is None or session.patient_id != patient_id:
@@ -428,6 +544,16 @@ def add_note(patient_id: str, body: NoteBody, user: User = Depends(require_roles
     return {'id': row.id}
 
 
+def _mark_abandoned_sessions(db, keep_id: str | None = None):
+    for oid in HUB.take_abandoned():
+        if oid == keep_id:
+            continue
+        old = db.get(RehabSession, oid)
+        if old is not None and old.status in ('calibrating', 'running'):
+            old.status = 'failed'
+            old.ended_at = utcnow()
+
+
 @router.get('/sessions')
 def list_sessions(patient_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(get_db)):
     rows = db.scalars(select(RehabSession).order_by(RehabSession.started_at.desc())).all()
@@ -495,7 +621,9 @@ def start_session(body: SessionStartBody, user: User = Depends(current_user), db
                   source, body.consent_recording)
     except Exception as exc:
         row.status = 'failed'
+        _mark_abandoned_sessions(db, sid)
         raise HTTPException(400, str(exc)) from exc
+    _mark_abandoned_sessions(db, sid)
     audit(db, user, 'start_session', 'session', sid, {'exercise': body.exercise_id, 'source': source})
     db.flush()
     return {'id': sid, 'source': source, 'status': 'calibrating', 'kind': row.kind,
@@ -529,7 +657,7 @@ async def intake_parse(body: IntakeParseBody, _user: User = Depends(current_user
 @router.post('/intake/transcribe')
 async def intake_transcribe(audio: UploadFile = File(...), language: str = Form('en-IN'),
                             _user: User = Depends(current_user)):
-    data = await audio.read()
+    data = await audio.read(2_000_001)
     if len(data) > 2_000_000:
         raise HTTPException(400, 'Audio clip is too large')
     result = await transcribe_audio(data, audio.filename or 'utterance.wav', audio.content_type or 'audio/wav', language)
@@ -546,7 +674,7 @@ async def intake_transcribe(audio: UploadFile = File(...), language: str = Form(
 @router.post('/intake/speak')
 async def intake_speak(body: VoiceSpeakBody, _user: User = Depends(current_user)):
     try:
-        audio, media_type = await synthesize_speech(body.text, body.language)
+        audio, media_type = await synthesize_speech(body.text, body.language, fast=True)
     except VoiceProviderError as exc:
         raise HTTPException(503, str(exc)) from exc
     return Response(content=audio, media_type=media_type, headers={'Cache-Control': 'no-store'})
@@ -571,18 +699,18 @@ async def voice_agent(
     ctx['language'] = language if language in ('en-IN', 'hi-IN') else 'en-IN'
     stt = {'transcript': (text or '').strip(), 'engine': 'typed', 'provider_fallback': False}
     if audio is not None:
-        data = await audio.read()
+        data = await audio.read(2_000_001)
         if len(data) > 2_000_000:
             raise HTTPException(400, 'Audio clip is too large')
         if data:
             try:
-                # Talk must stay interactive: skip slow Windows offline STT on the live path.
-                # Consumer uses fast=True (single STT engine) to cut listen→reply latency.
-                prefer = 'sarvam' if VOICE_STT == 'sarvam' else 'elevenlabs'
-                consumer_fast = str(ctx.get('scene') or '') == 'consumer'
+                # Interactive Talk: always single-engine STT (no cascade / offline).
+                prefer = 'sarvam' if (VOICE_STT == 'sarvam' or language in ('en-IN', 'hi-IN')) else 'elevenlabs'
+                if VOICE_STT == 'elevenlabs':
+                    prefer = 'elevenlabs'
                 stt = await transcribe_audio(
                     data, audio.filename or 'utterance.wav', audio.content_type or 'audio/wav', language,
-                    fast=consumer_fast, prefer=prefer, allow_offline=False,
+                    fast=True, prefer=prefer, allow_offline=False,
                 )
             except Exception:
                 stt = {
@@ -625,45 +753,59 @@ async def voice_agent(
                 )
             except KeyError:
                 parsed = None
-        if parsed and parsed.get('intent') in ('number', 'confirm_yes', 'confirm_no', 'safety_pause'):
+        if parsed and parsed.get('intent') == 'safety_pause':
             talk = {
-                'spoken': parsed.get('spoken') or transcript,
-                'action': 'pause' if parsed.get('intent') == 'safety_pause' else 'none',
-                'engine': parsed.get('engine'),
+                'spoken': parsed.get('spoken') or (
+                    'Please pause and rest the arm.' if ctx.get('language') != 'hi-IN' else 'रुकिए। हाथ आराम दें।'
+                ),
+                'action': 'pause',
+                'engine': parsed.get('engine') or 'intake-safety',
             }
         elif ctx.get('scene') == 'assistant' and patient_id:
             load_patient(db, user, patient_id)
-            supervisor = run_supervisor(db, patient_id, transcript or 'Summarise stored progress.', user.role)
-            talk = {
-                'spoken': (supervisor.get('summary') or '')[:400],
-                'action': 'none',
-                'engine': 'supervisor+' + ('llm' if supervisor.get('llm_used') else 'deterministic'),
-            }
+            memory_slice = patient_memory_for_agent(db, patient_id)
+            talk = await live_reply(transcript, ctx, language, memory_slice=memory_slice)
         else:
-            talk = await live_reply(transcript, ctx, language)
+            memory_slice = None
+            if patient_id:
+                try:
+                    load_patient(db, user, patient_id)
+                    memory_slice = patient_memory_for_agent(db, patient_id)
+                except HTTPException:
+                    memory_slice = None
+            talk = await live_reply(transcript, ctx, language, memory_slice=memory_slice)
+            if patient_id and talk.get('intent'):
+                remember_concern(patient_id, str(talk.get('intent')), transcript)
 
-    spoken = talk.get('spoken') or 'I am RehabAI. This is not a diagnosis.'
+    spoken = talk.get('spoken') or 'I am listening. This is not a diagnosis.'
     audio_b64 = None
     media_type = None
     tts_engine = 'browser-speech'
-    want_tts = str(speak or '0').strip().lower() in ('1', 'true', 'yes')
+    tts_error = None
+    # Default Talk TTS is Sarvam Bulbul speaker shubh (Subh). speak=0 skips TTS for tests.
+    speak_flag = str(speak if speak is not None else '1').strip().lower()
+    want_tts = speak_flag not in ('0', 'false', 'no', 'off', 'browser')
     if want_tts:
         try:
-            wav, media_type = await synthesize_speech(spoken, language)
+            wav, media_type = await synthesize_speech(spoken, language, fast=True)
             if len(wav) <= 900_000:
                 audio_b64 = base64.b64encode(wav).decode()
-                tts_engine = 'elevenlabs' if media_type == 'audio/mpeg' else 'sarvam-shubh'
+                tts_engine = 'elevenlabs-george' if media_type == 'audio/mpeg' else 'sarvam-subh'
             else:
                 media_type = None
-        except VoiceProviderError:
+                tts_error = 'Sarvam audio too large; browser speech used'
+        except VoiceProviderError as exc:
             media_type = None
+            tts_error = str(exc)
     return {
         'transcript': transcript,
         'spoken': spoken,
         'action': talk.get('action') or 'none',
         'engine': talk.get('engine'),
+        'demo_target': talk.get('demo_target'),
         'stt_engine': stt.get('engine'),
         'tts_engine': tts_engine if audio_b64 else 'browser-speech',
+        'tts_error': tts_error,
         'audio_base64': audio_b64,
         'media_type': media_type,
         'parsed': parsed,
@@ -675,6 +817,10 @@ async def voice_agent(
         'intake': talk.get('intake'),
         'memory': talk.get('memory'),
         'phase': talk.get('phase'),
+        'intent': talk.get('intent'),
+        'citations': talk.get('citations') or [],
+        'rag_used': bool(talk.get('rag_used')),
+        'pacing_hint': talk.get('pacing_hint'),
     }
 
 
@@ -752,11 +898,11 @@ async def session_phone_frame(
         raise HTTPException(400, 'Only phone capture sessions can ingest phone frames')
     if (frame.content_type or '').lower() not in ('image/jpeg', 'image/jpg'):
         raise HTTPException(415, 'Phone frame must use image/jpeg')
-    data = await frame.read()
+    data = await frame.read(PHONE_FRAME_MAX_BYTES + 1)
     if not data or len(data) > PHONE_FRAME_MAX_BYTES:
         raise HTTPException(400, f'Phone frame must be a JPEG under {PHONE_FRAME_MAX_BYTES} bytes')
     try:
-        telemetry = HUB.ingest_phone_frame(session_id, data)
+        telemetry = await run_in_threadpool(HUB.ingest_phone_frame, session_id, data)
     except KeyError as exc:
         raise HTTPException(404, 'Live session is not active') from exc
     except PhoneFrameRateLimit as exc:
@@ -787,25 +933,64 @@ def consumer_me(user: User = Depends(current_user), db: Session = Depends(get_db
     pain = get_pain_history(db, patient.id) or []
     mem = load_memory(patient.id)
     memory = patient_memory_for_agent(db, patient.id)
-    intake_done = bool((mem.get('intake') or {}).get('confirmed'))
+    profile = normalize_profile(mem.get('profile'))
+    intake_row = mem.get('intake') or {}
+    intake_done = bool(intake_row.get('confirmed')) or (
+        len(missing_intake_fields(scores_from_intake(intake_row))) == 0
+        and bool(intake_row.get('fields'))
+    )
     report_done = report_phase_complete(mem)
+    talk_skipped = bool(mem.get('talk_skipped'))
+    profile_done = profile_complete(profile) or intake_done  # legacy unlock
+    sessions = get_session_history(db, patient.id) or []
+    summaries = list(mem.get('session_summaries') or [])[-10:]
+    spoken_name = display_first_name(profile, '')
+    display = spoken_name or (user.full_name or '').split(' ')[0] or 'there'
+    age = profile.get('age')
+    if age is None and patient.date_of_birth:
+        try:
+            year = int(str(patient.date_of_birth)[:4])
+            age = max(0, utcnow().year - year)
+        except (TypeError, ValueError):
+            age = None
+    home_ready = bool(intake_done and report_done)
+    phase = (
+        'dashboard' if home_ready else
+        'report' if intake_done else
+        'questionnaire' if profile_done else
+        'profile'
+    )
     return {
         'patient_id': patient.id,
         'is_demo': bool(patient.is_demo),
-        'affected_side': patient.affected_side,
+        'affected_side': profile.get('affected_side') or patient.affected_side,
+        'age': age,
+        'profile': {
+            'complete': profile_done,
+            'full_name': profile.get('full_name') or patient.full_name,
+            'age': age,
+            'affected_side': profile.get('affected_side') or patient.affected_side,
+        },
         'progress': progress,
-        'abduction_series': [r for r in rom if r.get('movement') == 'abduction'],
-        'flexion_series': [r for r in rom if r.get('movement') == 'flexion'],
+        'abduction_series': [r for r in rom if r.get('movement') == 'abduction' and (
+            (progress.get('series_sources') or {}).get('abduction') is None or
+            r.get('source') == (progress.get('series_sources') or {}).get('abduction')
+        )],
+        'flexion_series': [r for r in rom if r.get('movement') == 'flexion' and (
+            (progress.get('series_sources') or {}).get('flexion') is None or
+            r.get('source') == (progress.get('series_sources') or {}).get('flexion')
+        )],
         'pain_series': pain,
         'memory': memory,
+        'session_summaries': summaries,
+        'recent_sessions': sessions[:10],
         'intake_complete': intake_done,
         'report_complete': report_done,
-        'phase': (
-            'dashboard' if intake_done and report_done else
-            'report' if intake_done else
-            'questionnaire'
-        ),
-        'display_name': (user.full_name or '').split(' ')[0] or 'there',
+        'profile_complete': profile_done,
+        'talk_skipped': talk_skipped,
+        'home_ready': home_ready,
+        'phase': phase,
+        'display_name': display,
         'phone_pose_available': phone_pose_available(),
         'greeting': greeting_prompt('en-IN', mem),
         'disclaimer': 'This is not a diagnosis. Voice answers and OCR printouts only.',
@@ -815,6 +1000,7 @@ def consumer_me(user: User = Depends(current_user), db: Session = Depends(get_db
 @router.post('/consumer/report-ocr')
 async def consumer_report_ocr(
     file: UploadFile = File(...),
+    cloud_ocr_consent: str = Form('0'),
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ):
@@ -823,19 +1009,37 @@ async def consumer_report_ocr(
     patient = db.scalars(select(Patient).where(Patient.user_id == user.id)).first()
     if patient is None:
         raise HTTPException(404, 'No patient record for this account')
-    data = await file.read()
+    data = await file.read(8_000_001)
     if not data or len(data) > 8_000_000:
         raise HTTPException(400, 'Report image must be under 8 MB')
-    result = await run_report_ocr(data, file.filename or 'report.jpg', file.content_type or 'image/jpeg')
+    consent = cloud_ocr_consent.strip().lower() in ('1', 'true', 'yes', 'on')
+    try:
+        result = await run_report_ocr(
+            data,
+            file.filename or 'report.jpg',
+            file.content_type or 'image/jpeg',
+            allow_cloud=consent,
+        )
+    except ValueError as exc:
+        raise HTTPException(415, str(exc)) from exc
+    if not result.get('text') and result.get('cloud_available') and not consent:
+        raise HTTPException(
+            422,
+            'Local OCR could not read this report. Select cloud OCR consent to send this image to the configured Claude service, or skip the report.',
+        )
     # Persist structured OCR only — not the raw image binary in SQL.
     report = {
         'engine': result.get('engine'),
         'metrics': result.get('metrics') or {},
         'text_excerpt': (result.get('text') or '')[:500],
-        'filename': file.filename or 'report.jpg',
+        'filename': result.get('filename'),
+        'cloud_used': bool(result.get('cloud_used')),
         'disclaimer': result.get('disclaimer'),
     }
     mem = append_report(patient.id, report, phase='done')
+    audit(db, user, 'consumer_report_ocr', 'patient', patient.id, {
+        'engine': report['engine'], 'cloud_used': report['cloud_used'], 'raw_image_stored': False,
+    })
     return {
         'ok': True,
         'report': report,
@@ -867,6 +1071,49 @@ def consumer_report_skip(user: User = Depends(current_user), db: Session = Depen
     }
 
 
+@router.post('/consumer/talk-skip')
+def consumer_talk_skip(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Skip Talk intake/report and open the consumer home (sessions / phone OpenCV)."""
+    if user.role != 'PATIENT':
+        raise HTTPException(403, 'Only the signed-in patient can skip Talk')
+    patient = db.scalars(select(Patient).where(Patient.user_id == user.id)).first()
+    if patient is None:
+        raise HTTPException(404, 'No patient record for this account')
+    mem = skip_talk_phase(patient.id)
+    audit(db, user, 'consumer_talk_skip', 'patient', patient.id, {'source': 'talk_skip'})
+    db.commit()
+    return {
+        'ok': True,
+        'action': 'open_home',
+        'talk_skipped': True,
+        'intake_complete': True,
+        'report_complete': report_phase_complete(mem),
+        'spoken': 'Skipping Talk. Opening your home dashboard so you can start a session.',
+    }
+
+
+@router.post('/consumer/retalk')
+def consumer_retalk(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Re-open clinical Talk without wiping the spoken profile name/age/side."""
+    if user.role != 'PATIENT':
+        raise HTTPException(403, 'Only the signed-in patient can restart Talk')
+    patient = db.scalars(select(Patient).where(Patient.user_id == user.id)).first()
+    if patient is None:
+        raise HTTPException(404, 'No patient record for this account')
+    mem = load_memory(patient.id)
+    mem['intake'] = empty_intake()
+    mem['report_phase'] = 'needed'
+    mem['talk_skipped'] = False
+    save_memory(patient.id, mem)
+    audit(db, user, 'consumer_retalk', 'patient', patient.id)
+    db.commit()
+    return {
+        'ok': True,
+        'patient_id': patient.id,
+        'phase': 'questionnaire' if profile_complete(normalize_profile(mem.get('profile'))) else 'profile',
+    }
+
+
 @router.post('/sessions/{session_id}/confirm')
 def confirm_session(session_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
     row = db.get(RehabSession, session_id)
@@ -883,6 +1130,19 @@ def confirm_session(session_id: str, user: User = Depends(current_user), db: Ses
         raise HTTPException(400, str(exc)) from exc
     row.status = 'running'
     return {'id': session_id, 'status': 'running'}
+
+
+@router.post('/sessions/{session_id}/pause')
+def pause_session(session_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    row = db.get(RehabSession, session_id)
+    if row is None:
+        raise HTTPException(404, 'Session not found')
+    load_patient(db, user, row.patient_id)
+    try:
+        HUB.pause(session_id)
+    except KeyError as exc:
+        raise HTTPException(404, 'Live session is not active') from exc
+    return {'id': session_id, 'status': 'paused'}
 
 
 @router.post('/sessions/{session_id}/fault')
@@ -927,10 +1187,17 @@ def finish_session(session_id: str, body: SessionFinishBody, user: User = Depend
     summary_for_memory['pain_after'] = body.pain_after
     movement = 'flexion' if 'flexion' in (row.exercise_id or '') else 'abduction'
     merge_session_into_memory(patient.id, summary_for_memory, row.id, movement)
+    insight = record_session_insight(
+        patient.id,
+        summary_for_memory,
+        pain_after=body.pain_after,
+        movement=movement,
+        exercise_id=row.exercise_id,
+    )
     audit(db, user, 'finish_session', 'session', row.id, {'reps': row.reps, 'source': row.source})
     db.flush()
     return {'session': _session(row), 'summary': summary, 'assessment_id': None if assessment is None else assessment.id,
-            'sample_count': len(history)}
+            'sample_count': len(history), 'insight': insight}
 
 
 @router.get('/exercises')
@@ -951,6 +1218,8 @@ def ack_alert(alert_id: str, user: User = Depends(require_roles('PHYSIOTHERAPIST
     row = db.get(Alert, alert_id)
     if row is None:
         raise HTTPException(404, 'Alert not found')
+    if row.patient_id:
+        load_patient(db, user, row.patient_id)
     row.acknowledged = True
     row.acknowledged_by = user.id
     return _alert(row)
@@ -1101,14 +1370,13 @@ async def session_ws(
     try:
         while True:
             try:
-                history = HUB.history(session_id)
+                history, next_sequence = HUB.history_since(session_id, sent)
             except KeyError:
                 await websocket.send_json({'type': 'ended'})
                 break
-            if sent < len(history):
-                for item in history[sent:]:
-                    await websocket.send_json(item)
-                sent = len(history)
+            for item in history:
+                await websocket.send_json(item)
+            sent = next_sequence
             await asyncio.sleep(0.08)
     except WebSocketDisconnect:
         return
@@ -1134,7 +1402,7 @@ def _focus_patient(patients, sessions):
     return patients[0]
 
 
-def _patients_by_activity(patients, sessions, assessments):
+def _patients_by_activity(patients, sessions, assessments, db=None):
     last = {}
     for session in sessions:
         stamp = session.ended_at or session.started_at
@@ -1144,6 +1412,17 @@ def _patients_by_activity(patients, sessions, assessments):
         stamp = row.created_at
         if stamp and (row.patient_id not in last or stamp > last[row.patient_id]):
             last[row.patient_id] = stamp
+    if db is not None:
+        for patient in patients:
+            if not patient.user_id:
+                continue
+            account = db.get(User, patient.user_id)
+            stamp = None if account is None else account.last_login_at
+            if stamp and (patient.id not in last or stamp > last[patient.id]):
+                last[patient.id] = stamp
+            created = patient.created_at
+            if created and (patient.id not in last or created > last[patient.id]):
+                last[patient.id] = created
 
     def key(patient):
         stamp = last.get(patient.id)
@@ -1168,15 +1447,116 @@ def _series_note(patient, rom):
 
 
 def _user(user):
-    return {'id': user.id, 'email': user.email, 'full_name': user.full_name, 'role': user.role,
-            'hospital_id': user.hospital_id}
+    return {
+        'id': user.id,
+        'email': user.email,
+        'full_name': user.full_name,
+        'role': user.role,
+        'hospital_id': user.hospital_id,
+        'last_login_at': None if user.last_login_at is None else user.last_login_at.isoformat() + 'Z',
+    }
 
 
-def _patient(patient):
-    return {'id': patient.id, 'mrn': patient.mrn, 'full_name': patient.full_name, 'affected_side': patient.affected_side,
-            'date_of_birth': patient.date_of_birth, 'sex': patient.sex, 'clinician_diagnosis': patient.clinician_diagnosis,
-            'assigned_physio_id': patient.assigned_physio_id, 'assigned_doctor_id': patient.assigned_doctor_id,
-            'is_demo': patient.is_demo}
+def _patient(patient, db=None):
+    account = None
+    if db is not None and patient.user_id:
+        account = db.get(User, patient.user_id)
+    last_login = None if account is None else account.last_login_at
+    return {
+        'id': patient.id,
+        'mrn': patient.mrn,
+        'full_name': patient.full_name,
+        'affected_side': patient.affected_side,
+        'date_of_birth': patient.date_of_birth,
+        'sex': patient.sex,
+        'clinician_diagnosis': patient.clinician_diagnosis,
+        'assigned_physio_id': patient.assigned_physio_id,
+        'assigned_doctor_id': patient.assigned_doctor_id,
+        'is_demo': patient.is_demo,
+        'user_id': patient.user_id,
+        'has_app_login': bool(patient.user_id),
+        'account_source': 'consumer' if patient.user_id else 'clinic',
+        'email': None if account is None else account.email,
+        'created_at': None if patient.created_at is None else patient.created_at.isoformat() + 'Z',
+        'last_login_at': None if last_login is None else last_login.isoformat() + 'Z',
+    }
+
+
+def _record_login(db, user, *, source: str, patient_id: str | None = None):
+    user.last_login_at = utcnow()
+    pid = patient_id
+    if pid is None and user.role == 'PATIENT':
+        linked = db.scalars(select(Patient).where(Patient.user_id == user.id)).first()
+        pid = None if linked is None else linked.id
+    detail = {'source': source, 'role': user.role}
+    if pid:
+        detail['patient_id'] = pid
+    audit(db, user, 'login', 'patient' if pid else 'user', pid or user.id, detail)
+
+
+def _consumer_login_events(db, hospital_id: str, since):
+    """Recent consumer bootstrap/login events for the hospital dashboard."""
+    from datetime import datetime, time
+    start = datetime.combine(since, time.min)
+    rows = db.scalars(
+        select(AuditLog)
+        .where(AuditLog.action.in_(('login', 'consumer_bootstrap')))
+        .where(AuditLog.created_at >= start)
+        .order_by(AuditLog.created_at.desc())
+        .limit(40)
+    ).all()
+    patients = {
+        p.id: p
+        for p in db.scalars(select(Patient).where(Patient.hospital_id == hospital_id)).all()
+    }
+    users = {u.id: u for u in db.scalars(select(User).where(User.hospital_id == hospital_id)).all()}
+    out = []
+    for row in rows:
+        detail = row.detail or {}
+        pid = detail.get('patient_id') or (row.resource_id if row.resource == 'patient' else None)
+        patient = patients.get(pid) if pid else None
+        actor = users.get(row.actor_id) if row.actor_id else None
+        if patient is None and actor and actor.role == 'PATIENT':
+            patient = next((p for p in patients.values() if p.user_id == actor.id), None)
+        if patient is None or patient.hospital_id != hospital_id:
+            continue
+        if not patient.user_id and row.action != 'consumer_bootstrap':
+            continue
+        out.append({
+            'action': row.action,
+            'at': row.created_at.isoformat() + 'Z',
+            'patient_id': patient.id,
+            'full_name': patient.full_name,
+            'mrn': patient.mrn,
+            'source': detail.get('source') or row.action,
+            'email': None if actor is None else actor.email,
+        })
+    return out
+
+
+def _patient_activity(db, patient, limit: int = 12):
+    q = (
+        select(AuditLog)
+        .where(
+            (AuditLog.resource_id == patient.id)
+            | (
+                (AuditLog.actor_id == patient.user_id)
+                & (AuditLog.action.in_(('login', 'consumer_bootstrap', 'consumer_retalk', 'consumer_report_ocr')))
+            )
+        )
+        .order_by(AuditLog.created_at.desc())
+        .limit(limit)
+    )
+    rows = db.scalars(q).all() if patient else []
+    return [
+        {
+            'action': row.action,
+            'resource': row.resource,
+            'at': row.created_at.isoformat() + 'Z',
+            'detail': row.detail or {},
+        }
+        for row in rows
+    ]
 
 
 def _assessment(row):
@@ -1228,15 +1608,18 @@ def _session_comp(db, session_id):
 def render_report_html(patient, report):
     payload = report.payload or {}
     changes = payload.get('measured_changes') or {}
-    rows = ''.join(f"<tr><th>{k}</th><td>{v}</td></tr>" for k, v in changes.items())
+    rows = ''.join(
+        f"<tr><th>{html.escape(str(k))}</th><td>{html.escape(str(v))}</td></tr>"
+        for k, v in changes.items()
+    )
     demo = 'DEMO / SYNTHETIC RECORDS INCLUDED' if patient.is_demo or payload.get('demo_records_present') else 'LIVE AND STORED CLINICAL RECORDS'
     return f"""<!doctype html><html><body style="font-family:Georgia,serif;padding:32px;color:#17302c">
     <p style="letter-spacing:2px;font-size:12px">{demo}</p>
     <h1>RehabAI progress report</h1>
-    <p>Patient {patient.full_name} ({patient.id}) · Affected side {patient.affected_side}</p>
-    <p>{payload.get('summary','')}</p>
+    <p>Patient {html.escape(str(patient.full_name))} ({html.escape(str(patient.id))}) · Affected side {html.escape(str(patient.affected_side))}</p>
+    <p>{html.escape(str(payload.get('summary','')))}</p>
     <table border="1" cellpadding="8">{rows}</table>
-    <p>Recommendation: {payload.get('recommendation','')}</p>
+    <p>Recommendation: {html.escape(str(payload.get('recommendation','')))}</p>
     <p>Clinician comments: ______________________________</p>
     <p>Approval: {'Approved' if report.approved_by else 'Pending clinician approval'}</p>
     <p style="font-size:13px">AI-assisted documentation. Not a diagnosis. Camera measurements estimate arm-to-trunk orientation.</p>

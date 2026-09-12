@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import io
 import re
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -62,7 +63,36 @@ def extract_metrics_from_text(text: str) -> dict[str, Any]:
     return out
 
 
-async def run_report_ocr(image_bytes: bytes, filename: str = 'report.jpg', content_type: str = 'image/jpeg') -> dict[str, Any]:
+def _validate_image(image_bytes: bytes) -> str:
+    """Validate decoded pixels and derive the media type from the bytes, not the upload header."""
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            width, height = image.size
+            image_format = (image.format or '').upper()
+            image.verify()
+    except Exception as exc:
+        raise ValueError('Report upload must be a valid JPEG, PNG, WebP, or GIF image') from exc
+    if width <= 0 or height <= 0 or width * height > 12_000_000:
+        raise ValueError('Report image dimensions are too large')
+    media_types = {
+        'JPEG': 'image/jpeg',
+        'PNG': 'image/png',
+        'WEBP': 'image/webp',
+        'GIF': 'image/gif',
+    }
+    if image_format not in media_types:
+        raise ValueError('Report upload must be a JPEG, PNG, WebP, or GIF image')
+    return media_types[image_format]
+
+
+async def run_report_ocr(
+    image_bytes: bytes,
+    filename: str = 'report.jpg',
+    content_type: str = 'image/jpeg',
+    *,
+    allow_cloud: bool = False,
+) -> dict[str, Any]:
     """OCR a clinician/patient report image. Never invents clinical numbers."""
     if not image_bytes:
         return {
@@ -72,9 +102,12 @@ async def run_report_ocr(image_bytes: bytes, filename: str = 'report.jpg', conte
             'metrics': extract_metrics_from_text(''),
             'error': 'empty_image',
         }
+    actual_media_type = _validate_image(image_bytes)
+    safe_filename = Path(filename or 'report.jpg').name[:120] or 'report.jpg'
     text = ''
     engine = 'none'
     error = None
+    cloud_used = False
 
     # 1) Local tesseract if installed
     try:
@@ -88,10 +121,11 @@ async def run_report_ocr(image_bytes: bytes, filename: str = 'report.jpg', conte
         text = ''
 
     # 2) Claude vision transcription only (no invented numbers in JSON)
-    if not text and ANTHROPIC_API_KEY:
+    if not text and ANTHROPIC_API_KEY and allow_cloud:
         try:
-            text = await _claude_transcribe(image_bytes, content_type)
+            text = await _claude_transcribe(image_bytes, actual_media_type)
             engine = 'claude-vision-transcribe' if text else 'claude-empty'
+            cloud_used = True
         except Exception as exc:
             error = 'claude_ocr_unavailable'
             text = ''
@@ -102,9 +136,12 @@ async def run_report_ocr(image_bytes: bytes, filename: str = 'report.jpg', conte
         'engine': engine,
         'text': text[:4000],
         'metrics': metrics,
-        'filename': filename,
+        'filename': safe_filename,
+        'content_type': actual_media_type,
+        'cloud_available': bool(ANTHROPIC_API_KEY),
+        'cloud_used': cloud_used,
         'error': error,
-        'disclaimer': 'OCR extracts printed numbers only. This is not a diagnosis.',
+        'disclaimer': 'OCR extracts printed numbers only. This is not a diagnosis. Raw report images are not stored.',
     }
 
 

@@ -19,7 +19,8 @@ COPY dist dist
 ENV PYTHONUNBUFFERED=1 \
     REHABAI_SOURCE=simulation \
     REHABAI_TTS=sarvam \
-    REHABAI_STT=auto
+    REHABAI_STT=auto \
+    REHABAI_POSE_KIND=opencv
 
 EXPOSE 8000
 

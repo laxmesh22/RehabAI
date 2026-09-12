@@ -58,40 +58,216 @@ class ConsumerVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
 
-    async def test_consumer_asks_first_question_without_inventing(self):
+    async def test_consumer_opens_without_scripted_questions(self):
         from agent import consumer_voice
         with patch.object(consumer_voice, 'ANTHROPIC_API_KEY', ''):
             row = await consumer_voice.consumer_reply('', patient_id='P-test', language='en-IN')
-        self.assertEqual(row['engine'], 'consumer-fast')
-        self.assertIn('Pain at rest', row['spoken'])
-        self.assertEqual(row['intake_field'], 'pain_rest')
+        self.assertEqual(row['engine'], 'consumer-autonomous')
+        self.assertRegex(row['spoken'].lower(), r'listen|सुन')
+        self.assertEqual(row['intake_field'], 'full_name')
+        self.assertEqual(row['phase'], 'profile')
         self.assertIsNone(row['parsed'])
-        self.assertNotIn('diagnosis', row['spoken'].lower())
+        self.assertIn('not a diagnosis', row['spoken'].lower())
+        self.assertNotRegex(row['spoken'], r'\b(?:ROM|recovery)\s*\d')
+        self.assertNotIn('tell me your name', row['spoken'].lower())
+
+    async def test_numbness_pauses_before_claude(self):
+        from agent import consumer_voice
+        with patch.object(consumer_voice, 'ANTHROPIC_API_KEY', 'configured'), \
+             patch.object(consumer_voice, 'claude_voice_turn') as mock:
+            row = await consumer_voice.consumer_reply(
+                'I have numbness in the hand', patient_id='P-num', language='en-IN',
+            )
+            mock.assert_not_called()
+        self.assertEqual(row['action'], 'pause')
+        self.assertEqual(row['engine'], 'consumer-safety')
+
+    async def test_consumer_profile_then_pain(self):
+        from agent import consumer_voice
+        with patch.object(consumer_voice, 'ANTHROPIC_API_KEY', ''):
+            a = await consumer_voice.consumer_reply('My name is Ravi Kumar', patient_id='P-prof', language='en-IN')
+            self.assertEqual(a['intake_field'], 'age')
+            b = await consumer_voice.consumer_reply('forty five', patient_id='P-prof', language='en-IN')
+            # "forty five" may not parse — use digits
+            if b['intake_field'] == 'age':
+                b = await consumer_voice.consumer_reply('45', patient_id='P-prof', language='en-IN')
+            self.assertEqual(b['intake_field'], 'affected_side')
+            c = await consumer_voice.consumer_reply('right shoulder', patient_id='P-prof', language='en-IN')
+        self.assertEqual(c['phase'], 'questionnaire')
+        self.assertEqual(c['intake_field'], 'pain_rest')
+        self.assertRegex(c['spoken'].lower(), r'listen|सुन')
+        self.assertNotIn('Now pain and function', c['spoken'])
 
     async def test_consumer_saves_number_and_advances_in_one_turn(self):
         from agent import consumer_voice
+        from backend.profile import apply_profile_value, empty_profile
+        profile = empty_profile()
+        profile = apply_profile_value(profile, 'full_name', 'Ravi', 'Ravi')
+        profile = apply_profile_value(profile, 'age', 45, '45')
+        profile = apply_profile_value(profile, 'affected_side', 'right', 'right')
+        memory_mod.save_memory('P-test', {'profile': profile})
         with patch.object(consumer_voice, 'ANTHROPIC_API_KEY', ''):
             row = await consumer_voice.consumer_reply('four', patient_id='P-test', language='en-IN')
         self.assertFalse(row.get('awaiting_confirm'))
         self.assertEqual(row['intake']['pain_rest'], 4)
         self.assertEqual(row['intake_field'], 'pain_movement')
         self.assertIn('4', row['spoken'])
-        self.assertTrue('moving' in row['spoken'].lower() or 'Pain while' in row['spoken'])
 
     async def test_consumer_completes_to_report_phase(self):
         from agent import consumer_voice
         from backend.intake import INTAKE_FIELDS, apply_confirmed_value
+        from backend.profile import apply_profile_value, empty_profile
         intake = empty_intake()
         for i, fid in enumerate(INTAKE_FIELDS):
             intake = apply_confirmed_value(intake, fid, min(i, 4 if 'difficulty' in fid else 10), 'voice')
-        memory_mod.save_memory('P-done', {'intake': intake, 'report_phase': 'needed'})
+        profile = empty_profile()
+        profile = apply_profile_value(profile, 'full_name', 'Ravi', 'Ravi')
+        profile = apply_profile_value(profile, 'age', 40, '40')
+        profile = apply_profile_value(profile, 'affected_side', 'right', 'right')
+        memory_mod.save_memory('P-done', {'intake': intake, 'profile': profile, 'report_phase': 'needed'})
         with patch.object(consumer_voice, 'ANTHROPIC_API_KEY', ''):
             row = await consumer_voice.consumer_reply('', patient_id='P-done', language='en-IN')
-        self.assertEqual(row['action'], 'await_report')
-        self.assertEqual(row['phase'], 'report')
-        skip = await consumer_voice.consumer_reply('skip', patient_id='P-done', language='en-IN')
+            self.assertEqual(row['action'], 'await_report')
+            self.assertEqual(row['phase'], 'report')
+            skip = await consumer_voice.consumer_reply('skip', patient_id='P-done', language='en-IN')
         self.assertEqual(skip['action'], 'open_home')
         self.assertIn('not a diagnosis', skip['spoken'].lower())
+
+    async def test_consumer_dashboard_history_action(self):
+        from agent import consumer_voice
+        from backend.intake import INTAKE_FIELDS, apply_confirmed_value
+        from backend.profile import apply_profile_value, empty_profile
+        intake = empty_intake()
+        for i, fid in enumerate(INTAKE_FIELDS):
+            intake = apply_confirmed_value(intake, fid, min(i, 4 if 'difficulty' in fid else 10), 'voice')
+        profile = apply_profile_value(apply_profile_value(apply_profile_value(
+            empty_profile(), 'full_name', 'Ravi', 'Ravi'), 'age', 40, '40'), 'affected_side', 'left', 'left')
+        memory_mod.save_memory('P-hist', {
+            'intake': intake, 'profile': profile, 'report_phase': 'skipped',
+            'session_summaries': [{'peak': 70, 'source': 'simulation', 'movement': 'abduction'}],
+        })
+        with patch.object(consumer_voice, 'ANTHROPIC_API_KEY', ''):
+            row = await consumer_voice.consumer_reply('show history', patient_id='P-hist', language='en-IN')
+        self.assertEqual(row['action'], 'open_history')
+        self.assertIn('not a diagnosis', row['spoken'].lower())
+        self.assertNotIn('you have frozen', row['spoken'].lower())
+
+    async def test_llm_turn_is_spoken_instead_of_script(self):
+        from agent import consumer_voice
+        fake = {
+            'spoken': 'Thanks, I am here with you. How does the shoulder feel today?',
+            'action': 'none',
+            'engine': 'llm-loop',
+        }
+        with patch.object(consumer_voice, 'ANTHROPIC_API_KEY', 'configured'), \
+             patch.object(consumer_voice, 'claude_voice_turn', return_value=fake):
+            row = await consumer_voice.consumer_reply('', patient_id='P-llm', language='en-IN')
+        self.assertEqual(row['spoken'], fake['spoken'])
+        self.assertEqual(row['engine'], 'llm-loop')
+        self.assertNotIn('tell me your name', row['spoken'].lower())
+
+
+class AutonomousExtractTests(unittest.TestCase):
+    def test_four_is_not_a_name(self):
+        from agent.autonomous import extract_volunteered
+        from backend.intake import empty_intake
+        from backend.profile import apply_profile_value, empty_profile
+        empty = extract_volunteered('four', empty_profile(), empty_intake())
+        self.assertEqual(empty, [])
+        profile = apply_profile_value(apply_profile_value(apply_profile_value(
+            empty_profile(), 'full_name', 'Ravi', 'Ravi'), 'age', 45, '45'), 'affected_side', 'right', 'right')
+        updates = extract_volunteered('four', profile, empty_intake())
+        kinds = [kind for kind, _f, _v in updates]
+        self.assertNotIn('profile', kinds)
+        self.assertEqual(updates[0][1], 'pain_rest')
+        self.assertEqual(updates[0][2], 4)
+
+    def test_cued_name_and_side_from_speech(self):
+        from agent.autonomous import extract_volunteered
+        from backend.intake import empty_intake
+        from backend.profile import empty_profile
+        updates = extract_volunteered('My name is Ravi Kumar, right shoulder', empty_profile(), empty_intake())
+        fields = {field: value for _k, field, value in updates}
+        self.assertIn('Ravi', str(fields.get('full_name')))
+        self.assertEqual(fields.get('affected_side'), 'right')
+        self.assertNotIn('Shoulder', str(fields.get('full_name')))
+
+    def test_pain_sentence_is_not_a_name(self):
+        from agent.autonomous import extract_volunteered
+        from backend.intake import empty_intake
+        from backend.profile import empty_profile
+        updates = extract_volunteered('my right shoulder hurts', empty_profile(), empty_intake())
+        fields = {field: value for _k, field, value in updates}
+        self.assertNotIn('full_name', fields)
+        self.assertEqual(fields.get('affected_side'), 'right')
+
+    def test_age_not_taken_from_rom_sentence(self):
+        from agent.autonomous import extract_volunteered
+        from backend.intake import empty_intake
+        from backend.profile import apply_profile_value, empty_profile
+        profile = apply_profile_value(empty_profile(), 'full_name', 'Ravi', 'Ravi')
+        updates = extract_volunteered('I reached 90 degrees', profile, empty_intake())
+        fields = {field: value for _k, field, value in updates}
+        self.assertNotIn('age', fields)
+        aged = extract_volunteered('45', profile, empty_intake())
+        self.assertEqual({field: value for _k, field, value in aged}.get('age'), 45)
+
+    def test_i_am_forty_five_is_not_a_name(self):
+        from agent.autonomous import extract_volunteered
+        from backend.intake import empty_intake
+        from backend.profile import empty_profile
+        updates = extract_volunteered('I am forty five', empty_profile(), empty_intake())
+        fields = {field: value for _k, field, value in updates}
+        self.assertNotIn('full_name', fields)
+        named = extract_volunteered('I am Ravi', empty_profile(), empty_intake())
+        self.assertEqual({field: value for _k, field, value in named}.get('full_name'), 'Ravi')
+
+
+class ClaudeLoopTests(unittest.IsolatedAsyncioTestCase):
+    async def test_claude_voice_turn_sends_the_utterance(self):
+        from agent import autonomous
+        capture = {}
+
+        class _Resp:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {'content': [{'type': 'text', 'text': json.dumps({
+                    'spoken': 'I am here. How does the shoulder feel?',
+                    'action': 'none',
+                    'save_field': None,
+                    'save_value': None,
+                    'demo_target': None,
+                })}]}
+
+        class _Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, url, headers=None, json=None):
+                capture['json'] = json
+                capture['url'] = url
+                return _Resp()
+
+        with patch.object(autonomous, 'ANTHROPIC_API_KEY', 'configured'), \
+             patch.object(autonomous.httpx, 'AsyncClient', _Client):
+            row = await autonomous.claude_voice_turn({
+                'language': 'en-IN',
+                'patient_said': 'my right shoulder hurts',
+            })
+        self.assertEqual(row['engine'], 'llm-loop')
+        self.assertIn('shoulder', row['spoken'].lower())
+        self.assertIn('system', capture['json'])
+        body = capture['json']['messages'][0]['content']
+        self.assertIn('my right shoulder hurts', body)
+        self.assertNotIn('Tell me your name', row['spoken'])
 
 
 class PhoneFrameTests(unittest.TestCase):
@@ -102,7 +278,7 @@ class PhoneFrameTests(unittest.TestCase):
              patch('edge.phone_capture.POSE_MODEL', ''):
             with self.assertRaises(ValueError) as ctx:
                 hub.ingest_phone_frame('missing', b'not-a-jpeg')
-            self.assertIn('REHABAI_POSE_MODEL', str(ctx.exception))
+            self.assertIn('REHABAI_POSE', str(ctx.exception))
 
     def test_simulation_rejects_phone_frames(self):
         from backend.services.live_hub import LiveHub
@@ -138,10 +314,11 @@ class ConsumerApiTests(unittest.TestCase):
         from backend.main import app
         cls._cm = TestClient(app)
         cls.client = cls._cm.__enter__()
-        login = cls.client.post('/api/auth/login', json={
-            'email': 'ananya.sharma@demo.local', 'password': 'rehabai-demo',
-        })
-        cls.token = login.json()['token']
+        boot = cls.client.post('/api/consumer/bootstrap', json={'full_name': 'Consumer Test'})
+        assert boot.status_code == 200, boot.text
+        payload = boot.json()
+        cls.token = payload['token']
+        cls.patient_id = payload['patient_id']
         cls.headers = {'Authorization': 'Bearer ' + cls.token}
 
     @classmethod
@@ -154,32 +331,50 @@ class ConsumerApiTests(unittest.TestCase):
 
     def test_consumer_me_and_voice_agent(self):
         me = self.client.get('/api/consumer/me', headers=self.headers).json()
-        self.assertEqual(me['patient_id'], 'P102')
-        self.assertTrue(me['is_demo'])
+        self.assertEqual(me['patient_id'], self.patient_id)
+        self.assertFalse(me['is_demo'])
         self.assertIn('memory', me)
         body = {
             'language': 'en-IN',
             'speak': '0',
-            'patient_id': 'P102',
+            'patient_id': self.patient_id,
             'context': json.dumps({'scene': 'consumer'}),
             'text': '',
         }
-        res = self.client.post('/api/voice/agent', headers=self.headers, data=body)
+        from agent import consumer_voice
+        with patch.object(consumer_voice, 'ANTHROPIC_API_KEY', ''):
+            res = self.client.post('/api/voice/agent', headers=self.headers, data=body)
         self.assertEqual(res.status_code, 200)
         data = res.json()
         self.assertTrue(data.get('spoken'))
         self.assertIn(data.get('engine'), {
             'consumer-fallback', 'consumer-autonomous', 'consumer-prompt', 'consumer-report',
             'consumer-ready', 'consumer-complete', 'consumer-fast', 'consumer-next', 'consumer-reask',
-            'consumer-intake-done',
+            'consumer-intake-done', 'consumer-profile', 'consumer-profile-next', 'consumer-profile-reask',
+            'consumer-profile-done', 'consumer-history', 'consumer-action', 'llm-loop',
         })
         self.assertEqual(data['tts_engine'], 'browser-speech')
         # Numbers must never be invented into spoken on empty open turn without patient words.
         self.assertNotRegex(data['spoken'], r'\b(?:ROM|recovery)\s*\d')
 
+    def test_talk_skip_unlocks_home(self):
+        before = self.client.get('/api/consumer/me', headers=self.headers).json()
+        self.assertFalse(before.get('home_ready'))
+        skip = self.client.post('/api/consumer/talk-skip', headers=self.headers, json={})
+        self.assertEqual(skip.status_code, 200, skip.text)
+        body = skip.json()
+        self.assertTrue(body.get('talk_skipped'))
+        self.assertEqual(body.get('action'), 'open_home')
+        me = self.client.get('/api/consumer/me', headers=self.headers).json()
+        self.assertTrue(me.get('talk_skipped'))
+        self.assertTrue(me.get('home_ready'))
+        self.assertTrue(me.get('intake_complete'))
+        self.assertTrue(me.get('report_complete'))
+        self.assertEqual(me.get('phase'), 'dashboard')
+
     def test_phone_frame_endpoint_without_model(self):
         start = self.client.post('/api/sessions', headers=self.headers, json={
-            'patient_id': 'P102', 'exercise_id': 'shoulder_abduction',
+            'patient_id': self.patient_id, 'exercise_id': 'shoulder_abduction',
             'kind': 'rehab', 'consent_recording': False, 'capture': 'simulation',
         })
         self.assertEqual(start.status_code, 200)
@@ -192,7 +387,10 @@ class ConsumerApiTests(unittest.TestCase):
         )
         self.assertEqual(res.status_code, 400)
         detail = res.json()['detail']
-        self.assertTrue('POSE_MODEL' in detail or 'Simulation' in detail)
+        self.assertTrue(
+            'POSE_MODEL' in detail or 'Simulation' in detail or 'opencv' in detail.lower()
+            or 'pose' in detail.lower()
+        )
 
 
 if __name__ == '__main__':

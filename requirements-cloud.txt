@@ -1,4 +1,6 @@
-# Lightweight extras for Railway (simulation studio + voice). No RealSense/CUDA.
+# Extras for Railway (simulation studio + voice + phone OpenCV pose). No RealSense/CUDA.
+# MediaPipe needs Python 3.12 (Dockerfile uses python:3.12-slim).
 numpy>=1.26
-opencv-python-headless>=4.8
+opencv-python-headless>=4.8,<5
+mediapipe==0.10.21
 Pillow>=10.0

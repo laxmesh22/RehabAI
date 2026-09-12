@@ -23,7 +23,8 @@ FUNCTION_SCALE = (
 
 SAFETY_RE = re.compile(
     r'\b(stop|pause|enough|too much pain|hurts a lot|sharp pain|cannot continue|'
-    r'रुक|रुको|बहुत दर्द|बहुत दर्द हो रहा)\b',
+    r'numbness|tingling|shooting pain|sudden severe|'
+    r'रुक|रुको|बहुत दर्द|बहुत दर्द हो रहा|सुन्न|झुनझुनी)\b',
     re.I,
 )
 YES_RE = re.compile(

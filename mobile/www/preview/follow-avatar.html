@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RehabAI · FollowAvatar package preview</title>
+  <script type="importmap">
+  { "imports": { "three": "/ui/vendor/three.module.js" } }
+  </script>
+  <style>
+    :root { --bg:#eef2ef; --ink:#1f2b29; --teal:#2c6e62; --card:#fbfaf7; }
+    body { margin:0; font:400 15px/1.45 system-ui,sans-serif; background:var(--bg); color:var(--ink); padding:20px; }
+    h1 { margin:0 0 8px; font-size:1.6rem; }
+    .note { color:#4b5955; max-width:60ch; margin:0 0 16px; }
+    .stage { position:relative; background:var(--card); border:1px solid #e1e7e3; border-radius:16px;
+             aspect-ratio:4/3; max-width:720px; overflow:hidden; }
+    #canvas { position:absolute; inset:0; }
+    .row { display:flex; flex-wrap:wrap; gap:8px; margin:14px 0; }
+    button, select { font:600 14px system-ui; padding:10px 14px; border-radius:10px; border:1.5px solid var(--teal); background:#fff; color:var(--teal); cursor:pointer; }
+    button.primary { background:var(--teal); color:#fff; }
+    #status { margin-top:10px; font-weight:600; }
+  </style>
+</head>
+<body>
+  <h1>Follow-along model (package check)</h1>
+  <p class="note">Local preview of <code>rehab-ai-avatar-and-pain-check</code> via vendored Three.js + <code>web/follow_avatar.js</code>. Open while the API serves <code>/ui</code>.</p>
+  <div class="stage"><div id="canvas"></div></div>
+  <div class="row">
+    <select id="ex"></select>
+    <select id="side"><option value="right">Right</option><option value="left">Left</option></select>
+    <button type="button" id="restart">Restart</button>
+    <button type="button" class="primary" id="play">Pause</button>
+  </div>
+  <p id="status">Starting…</p>
+  <script type="module">
+    import { createFollowAvatar } from '/ui/follow_avatar.js?v=34';
+    import { EXERCISES } from '/ui/motion.js?v=34';
+    const canvas = document.getElementById('canvas');
+    const status = document.getElementById('status');
+    const exSel = document.getElementById('ex');
+    Object.keys(EXERCISES).forEach((id) => {
+      const o = document.createElement('option');
+      o.value = id; o.textContent = id;
+      if (id === 'abduction') o.selected = true;
+      exSel.appendChild(o);
+    });
+    let avatar = null;
+    let playing = true;
+    function mount() {
+      try {
+        avatar?.dispose();
+        const id = exSel.value;
+        avatar = createFollowAvatar(canvas, {
+          exercise: id,
+          affectedSide: document.getElementById('side').value,
+          target: EXERCISES[id].defaultTarget,
+          mirror: true,
+          showArc: true,
+          playing: true,
+          view: 'auto',
+        });
+        requestAnimationFrame(() => avatar.forceResize());
+        status.textContent = `OK · ${id} · target ${EXERCISES[id].defaultTarget}° · canvas ${canvas.clientWidth}×${canvas.clientHeight}`;
+      } catch (err) {
+        status.textContent = 'Failed: ' + (err?.message || err);
+      }
+    }
+    exSel.onchange = mount;
+    document.getElementById('side').onchange = mount;
+    document.getElementById('restart').onclick = () => avatar?.reset();
+    document.getElementById('play').onclick = (ev) => {
+      playing = !playing;
+      if (playing) avatar?.play(); else avatar?.pause();
+      ev.target.textContent = playing ? 'Pause' : 'Play';
+    };
+    mount();
+  </script>
+</body>
+</html>

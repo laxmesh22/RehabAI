@@ -1,9 +1,14 @@
 __pycache__/
 *.pyc
 .venv/
+.offline-wheels/
+vendor/shoulder_tracker/.venv/
+vendor/shoulder_tracker/.wheels/
+vendor/shoulder_tracker/_extract/
 data/
 tmp/
 .env
+session_output/
 .sites-runtime/
 training-runs/
 *.pt
@@ -31,5 +36,7 @@ outputs/
 releases/
 *.apk
 *.aab
+*.zip
+SHOULDER TRACKER/
 mobile/android/app/src/main/assets/public/
 mobile/android/.idea/

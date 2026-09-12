@@ -1,29 +1,24 @@
 # RehabAI — agent handoff
 
 ## User request and scope
-MEDHA PS 8 adhesive capsulitis assessment support — not a diagnosis service.
+APK home dashboard does not show OpenCV / Phone camera.
+
+## Cause
+Phone camera only appears when `phone_pose_available` is true. Railway reports true; clinic LAN fallback `http://172.16.6.7:8000` reports false (`opencv: false`). APK was sticky-saving the first reachable host (often LAN), so home showed Simulation only.
 
 ## This stage
-Analysed and kept folder `rehab-ai-avatar-and-pain-check/` (avatar + pain check package).
-
-### Exercises wired to FollowAvatar
-Catalog in `edge/exercises/library.py` now includes `avatar_demo` for every entry:
-- shoulder_abduction → abduction
-- shoulder_flexion → flexion
-- assisted_flexion / wand_flexion → wand_flexion
-- wall_climb → wall_walk
-- pendulum → pendulum
-- external_rotation → er
-- wand_er → wand_er
-
-UI: exercise picker on patient + consumer dashboard; live session mounts the matching 3D demo + target.
-
-### Pain check
-Ported emoji 0–10 pain UI (`web/pain_scale.js`) into session debrief (replaces number chips).
+- `resolveApiOrigin` probes all candidates and prefers hosts with `phone_pose_available` (Railway over LAN without OpenCV).
+- Home: label **Phone camera · OpenCV**; if pose offline, show API host + **Use Railway (OpenCV)** / **Reset API host**.
+- Cache `app.js?v=63`. Sync mobile/www.
 
 ## Verification
-- `python -m unittest tests.test_pain_scale tests.test_motion tests.test_consumer -v`
-- Cache `?v=31` / `nura17`
+- Railway `/api/health`: `phone_pose_available: true`.
+- LAN `172.16.6.7:8000`: `phone_pose_available: false`.
+- APK rebuilt: `releases/RehabAI-consumer-20260912-0917.apk` (+ `RehabAI-consumer-debug.apk`).
+
+## Unresolved
+- Clinic LAN still lacks OpenCV/MediaPipe in the running Python — fix local `.venv` / Start-RehabAI if offline phone pose is required.
 
 ## Next
-Redeploy Railway; rebuild APK when needed.
+- Install new APK → home should show **Phone camera · OpenCV** when using Railway.
+- If still Simulation only: tap **Use Railway (OpenCV)** or Reset API host (clears sticky LAN).

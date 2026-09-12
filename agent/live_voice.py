@@ -1,19 +1,28 @@
-"""Live spoken coach. Claude talks from session metrics only. It cannot diagnose or invent ROM."""
+"""Live spoken session coach. Claude talks from measured metrics + 3D guide state only.
+
+Conservative: measurement support, not diagnosis. Never invents ROM/pain.
+During measure, the user can talk while the FollowAvatar demo runs; replies may sync demo_target.
+"""
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import httpx
 
-from backend.config import ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, ANTHROPIC_MODEL, VOICE_TIMEOUT_S
+from agent.coach_policy import CONSERVATIVE_RULES, clamp_demo_target, num
 from agent.studio_browser import STUDIO_ACTIONS, match_action, normalize_action
+from agent.retrieval.grounding import grounded_or_fallback
+from backend.config import ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, ANTHROPIC_MODEL, VOICE_TIMEOUT_S
 
 ALLOWED_CONTEXT = (
     'scene', 'language', 'exercise', 'movement', 'source', 'safety', 'phase',
-    'shoulder_angle', 'torso_lean', 'reps', 'goal', 'target', 'coverage',
+    'shoulder_angle', 'peak', 'torso_lean', 'reps', 'goal', 'target', 'coverage',
     'feedback', 'intake_field', 'question', 'valid', 'fused_angle', 'awaiting_confirm',
     'last_transcript', 'last_spoken', 'pending_value',
+    'guide_cue', 'demo_target', 'avatar_demo', 'coach_mode',
+    'avatar_phase', 'avatar_reps', 'avatar_demo_angle',
 )
 
 END_MARKERS = (
@@ -21,16 +30,35 @@ END_MARKERS = (
     'end conversation', 'hang up', 'बात खत्म', 'बस इतना',
 )
 
-SYSTEM = (
-    'You are RehabAI, a live voice at a shoulder rehabilitation workstation. '
-    'Speak like a calm physiotherapist assistant in an ongoing call, not a chatbot. '
-    'This is not a diagnosis service. Never name a disease as confirmed. Never invent ROM, reps, pain scores, or IMU values. '
-    'Use only numbers present in the session context. If a number is missing, say it was not measured. '
-    'If safety is BLOCK or PAUSE, tell the patient to stop and rest; do not encourage more movement. '
-    'Keep spoken replies under 28 words. Match the requested language. '
-    'Do not ask for name, MRN, or other identifiers. '
-    'Set action to end only when the caller clearly finishes the conversation. '
-    'Set a workstation action only when they clearly ask to open that screen or start tracking.'
+MEASURE_ACTIONS = list(STUDIO_ACTIONS)
+
+RED_FLAG_RE = re.compile(
+    r'\b(numb(?:ness)?|tingling|shooting pain|sudden severe|cannot move|can\'t move)\b|'
+    r'सुन्न|झुनझुनी|अचानक तेज',
+    re.I,
+)
+
+SYSTEM_CLINIC = (
+    'You are RehabAI, a live voice at a shoulder rehab workstation in an ongoing call. '
+    'Not a chatbot, not a FAQ, not a diagnosis service. '
+    + ' '.join(CONSERVATIVE_RULES) + ' '
+    'Answer only from the live session metrics and what they just said. '
+    'If a clinical claim is not in those metrics, say a physiotherapist should answer it. '
+    'Keep spoken under 28 words. Match the language. '
+    'Do not ask for identifiers. action=end only when they finish. '
+    'Set a workstation action only when they clearly ask.'
+)
+
+SYSTEM_MEASURE = (
+    'You are RehabAI, a live AI coach during a follow-along session. '
+    'A 3D guide is on screen. Coach from measured angle, peak, target, reps, lean, '
+    'avatar_phase / avatar_reps / avatar_demo_angle when present, and their words. '
+    + ' '.join(CONSERVATIVE_RULES) + ' '
+    'Do not read a script or FAQ. Do not invent bone poses — the mesh follows telemetry only. '
+    'If they ask what is normal and you lack a measured number, defer to the physiotherapist. '
+    'demo_target may rise only up to measured peak (syncs the 3D demo ceiling, not patient bones). '
+    'Spoken under 32 words. Match the language. '
+    'Return JSON: spoken, action, demo_target.'
 )
 
 
@@ -53,50 +81,88 @@ def _looks_like_identity(value: str) -> bool:
     return any(token in lowered for token in ('patient_id', 'full_name', ' mrn', 'mrn:', '@hospital', '@demo'))
 
 
-async def live_reply(transcript: str, context: dict[str, Any], language: str = 'en-IN') -> dict[str, Any]:
+async def live_reply(transcript: str, context: dict[str, Any], language: str = 'en-IN',
+                    memory_slice: dict[str, Any] | None = None) -> dict[str, Any]:
     ctx = sanitize_context(context)
     spoken_language = language if language in ('en-IN', 'hi-IN') else 'en-IN'
+    hindi = spoken_language == 'hi-IN'
     text = (transcript or '').strip()[:500]
+    measure = (ctx.get('scene') or '') == 'measure' or (ctx.get('coach_mode') or '') == 'session'
+    metrics = {
+        'angle': ctx.get('shoulder_angle'),
+        'peak': ctx.get('peak'),
+        'target': ctx.get('target'),
+        'reps': ctx.get('reps'),
+        'goal': ctx.get('goal'),
+        'lean': ctx.get('torso_lean'),
+        'coverage': ctx.get('coverage'),
+    }
+
     if ctx.get('safety') in ('BLOCK', 'PAUSE'):
         spoken = (
             'Please stop. Rest the arm. A physiotherapist should review before you continue.'
-            if spoken_language != 'hi-IN'
-            else 'रुकिए। हाथ आराम दें। फिजियोथेरेपिस्ट की सलाह लें।'
+            if not hindi else
+            'रुकिए। हाथ आराम दें। फिजियोथेरेपिस्ट की सलाह लें।'
         )
-        return {'spoken': spoken, 'action': 'pause', 'engine': 'safety', 'context': ctx}
+        return _pack(spoken, 'pause', 'safety', ctx)
 
-    if not text:
-        spoken = 'I did not catch that. Please say it again.' if spoken_language != 'hi-IN' else 'सुनाई नहीं दिया। फिर से कहिए।'
-        return {'spoken': spoken, 'action': 'none', 'engine': 'empty', 'context': ctx}
+    if RED_FLAG_RE.search(text):
+        spoken = (
+            'Please stop. Rest the arm. A physiotherapist should review before you continue.'
+            if not hindi else
+            'रुकिए। हाथ आराम दें। फिजियोथेरेपिस्ट की सलाह लें।'
+        )
+        return _pack(spoken, 'pause', 'safety-redflag', ctx)
 
     if _wants_end(text):
-        spoken = 'Alright. I am here if you need me again.' if spoken_language != 'hi-IN' else 'ठीक है। फिर जरूरत हो तो बोलिए।'
-        return {'spoken': spoken, 'action': 'end', 'engine': 'end-phrase', 'context': ctx}
+        spoken = 'Alright. I am here if you need me again.' if not hindi else 'ठीक है। फिर जरूरत हो तो बोलिए।'
+        return _pack(spoken, 'end', 'end-phrase', ctx)
 
-    quick = _fast_reply(text, ctx, spoken_language)
-    if quick:
-        return {**quick, 'context': ctx}
+    if _wants_pause(text):
+        spoken = (
+            'Please pause and rest the arm. Tell a physiotherapist if the pain stays high.'
+            if not hindi else
+            'रुकिए और हाथ आराम दें। दर्द बना रहे तो फिजियोथेरेपिस्ट को बताएं।'
+        )
+        return _pack(spoken, 'pause', 'safety-phrase', ctx)
+
+    action = match_action(text)
+
+    peak = num(ctx.get('peak')) or num(ctx.get('shoulder_angle'))
+    target = num(ctx.get('target'))
 
     if not ANTHROPIC_API_KEY:
-        return {'spoken': _template(text, ctx, spoken_language), 'action': 'none', 'engine': 'deterministic-live', 'context': ctx}
+        return _pack(
+            _offline_spoken(ctx, spoken_language),
+            action if action != 'none' else 'none',
+            'llm-loop-fallback',
+            ctx,
+        )
 
+    system = SYSTEM_MEASURE if measure else SYSTEM_CLINIC
     user = {
-        'utterance': text,
+        'utterance': text or '(call started — greet and listen, do not read a questionnaire)',
         'language': spoken_language,
         'session': ctx,
-        'rules': ['no_diagnosis', 'no_invented_measurements', 'cannot_override_BLOCK'],
+        'known_metrics': {k: v for k, v in metrics.items() if v not in (None, '')},
+        'memory': {
+            'last_peak': None if not memory_slice else memory_slice.get('last_peak_abduction'),
+            'last_pain': None if not memory_slice else memory_slice.get('last_pain_after'),
+        },
+        'rules': CONSERVATIVE_RULES,
     }
     schema = {
         'type': 'object',
         'properties': {
             'spoken': {'type': 'string'},
-            'action': {'type': 'string', 'enum': list(STUDIO_ACTIONS)},
+            'action': {'type': 'string', 'enum': MEASURE_ACTIONS},
+            'demo_target': {'type': ['number', 'null']},
         },
-        'required': ['spoken', 'action'],
+        'required': ['spoken', 'action', 'demo_target'],
         'additionalProperties': False,
     }
     try:
-        async with httpx.AsyncClient(timeout=min(5.0, VOICE_TIMEOUT_S)) as client:
+        async with httpx.AsyncClient(timeout=min(8.0, VOICE_TIMEOUT_S)) as client:
             response = await client.post(
                 f'{ANTHROPIC_BASE_URL}/v1/messages',
                 headers={
@@ -106,8 +172,8 @@ async def live_reply(transcript: str, context: dict[str, Any], language: str = '
                 },
                 json={
                     'model': ANTHROPIC_MODEL,
-                    'max_tokens': 60,
-                    'system': SYSTEM,
+                    'max_tokens': 90 if measure else 80,
+                    'system': system,
                     'messages': [{'role': 'user', 'content': json.dumps(user, ensure_ascii=False)}],
                     'output_config': {'format': {'type': 'json_schema', 'schema': schema}},
                 },
@@ -118,104 +184,52 @@ async def live_reply(transcript: str, context: dict[str, Any], language: str = '
         block = next((item for item in blocks if item.get('type') == 'text'), None)
         result = json.loads((block or {}).get('text') or '{}')
         spoken = str(result.get('spoken') or '').strip()[:280]
-        action = normalize_action(result.get('action'))
+        out_action = normalize_action(result.get('action'))
+        if action != 'none' and out_action in ('', 'none'):
+            out_action = action
         if not spoken:
-            spoken = _template(text, ctx, spoken_language)
+            spoken = _offline_spoken(ctx, spoken_language)
+        spoken, grounded, _reason = grounded_or_fallback(spoken, [], metrics, hindi=hindi)
+        if not grounded:
+            spoken = _offline_spoken(ctx, spoken_language)
+        engine = 'claude-live-agent' if grounded else 'llm-loop-fallback'
         if ctx.get('safety') == 'BLOCK':
-            action = 'pause'
-        return {'spoken': spoken, 'action': action, 'engine': 'claude-live-agent', 'context': ctx}
+            out_action = 'pause'
+        demo = clamp_demo_target(result.get('demo_target'), peak, target) if measure else None
+        pack = _pack(spoken, out_action, engine, ctx)
+        if demo is not None:
+            pack['demo_target'] = demo
+        return pack
     except (httpx.HTTPError, ValueError, TypeError, StopIteration, json.JSONDecodeError):
-        return {
-            'spoken': _template(text, ctx, spoken_language),
-            'action': 'none',
-            'engine': 'deterministic-live',
-            'context': ctx,
-            'provider_error': 'claude_unavailable',
-        }
+        pack = _pack(_offline_spoken(ctx, spoken_language), action if action != 'none' else 'none', 'llm-loop-fallback', ctx)
+        pack['provider_error'] = 'claude_unavailable'
+        return pack
 
 
-def _fast_reply(text: str, ctx: dict[str, Any], language: str) -> dict[str, Any] | None:
-    hindi = language == 'hi-IN'
-    if _wants_pause(text):
-        spoken = (
-            'Please pause and rest the arm. Tell a physiotherapist if the pain stays high.'
-            if not hindi else 'रुकिए और हाथ आराम दें। दर्द बना रहे तो फिजियोथेरेपिस्ट को बताएं।'
-        )
-        return {'spoken': spoken, 'action': 'pause', 'engine': 'safety-phrase'}
-    action = match_action(text)
-    if _can_answer_from_metrics(text, ctx) or ctx.get('scene') == 'measure':
-        return {'spoken': _metrics_spoken(ctx, hindi), 'action': action, 'engine': 'metrics'}
-    if action != 'none':
-        spoken = _action_ack(action, hindi)
-        return {'spoken': spoken, 'action': action, 'engine': 'keyword-action'}
-    return None
-
-
-def _can_answer_from_metrics(text: str, ctx: dict[str, Any]) -> bool:
-    lowered = ' '.join((text or '').lower().split())
-    keys = (
-        'how am i', 'how high', 'what angle', 'my angle', 'range of motion',
-        'rep count', 'how many reps', 'torso lean', 'am i doing', 'my arm',
-        'kitna', 'how is my', 'shoulder angle',
-    )
-    if not any(key in lowered for key in keys):
-        return False
-    return any(ctx.get(field) not in (None, '', False) for field in (
-        'shoulder_angle', 'reps', 'torso_lean', 'feedback', 'fused_angle', 'coverage',
-    ))
-
-
-def _metrics_spoken(ctx: dict[str, Any], hindi: bool) -> str:
-    bits = []
-    if ctx.get('valid') and ctx.get('shoulder_angle') is not None:
-        bits.append(f"{int(ctx['shoulder_angle'])} degrees" if not hindi else f"{int(ctx['shoulder_angle'])} डिग्री")
-    if ctx.get('reps') is not None:
-        bits.append(f"{ctx['reps']} reps" if not hindi else f"{ctx['reps']} रेप्स")
-    if ctx.get('torso_lean') is not None:
-        bits.append(f"lean {int(ctx['torso_lean'])} degrees" if not hindi else f"धड़ {int(ctx['torso_lean'])} डिग्री")
-    if ctx.get('feedback'):
-        bits.append(str(ctx['feedback']))
-    if ctx.get('source') == 'simulation':
-        bits.append('labelled simulation, not a live camera' if not hindi else 'यह सिमुलेशन है, लाइव कैमरा नहीं')
-    if bits:
-        spoken = '. '.join(bit.rstrip(' .') for bit in bits[:4]) + '.'
-        return spoken[:280]
-    if hindi:
-        return 'इस स्क्रीन पर लाइव माप नहीं है। सेशन खोलकर मापें। यह निदान नहीं है।'
-    return 'There is no live measurement on this screen. Open a session to measure. This is not a diagnosis.'
-
-
-def _action_ack(action: str, hindi: bool) -> str:
-    english = {
-        'open_patients': 'Opening the patient list.',
-        'open_settings': 'Opening settings.',
-        'open_home': 'Opening your dashboard.',
-        'confirm_tracking': 'Confirming tracking.',
-        'start_session': 'Starting the session.',
+def _pack(spoken: str, action: str, engine: str, ctx: dict[str, Any],
+          retrieved: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {
+        'spoken': spoken,
+        'action': action,
+        'engine': engine,
+        'context': ctx,
+        'demo_target': None,
+        'intent': None,
+        'citations': [],
+        'rag_used': False,
     }
-    hindi_map = {
-        'open_patients': 'मरीज सूची खोल रहा हूँ।',
-        'open_settings': 'सेटिंग खोल रहा हूँ।',
-        'open_home': 'आपका डैशबोर्ड खोल रहा हूँ।',
-        'confirm_tracking': 'ट्रैकिंग कन्फर्म कर रहा हूँ।',
-        'start_session': 'सेशन शुरू कर रहा हूँ।',
-    }
-    return (hindi_map if hindi else english).get(action, 'Okay.')
 
 
-def _template(text: str, ctx: dict[str, Any], language: str) -> str:
+def _offline_spoken(ctx: dict[str, Any], language: str) -> str:
+    """Last resort if Claude is down. Sensor numbers only — not a FAQ."""
     hindi = language == 'hi-IN'
-    feedback = ctx.get('feedback')
-    scene = ctx.get('scene') or 'clinic'
-    if scene == 'measure' and feedback:
-        return str(feedback)
+    bits = ['मैं सुन रहा हूँ। यह निदान नहीं है।' if hindi else 'I am listening. This is not a diagnosis.']
+    peak = num(ctx.get('peak'))
+    if peak is not None and ((ctx.get('scene') or '') == 'measure' or (ctx.get('coach_mode') or '') == 'session'):
+        bits.append(f'शिखर {int(peak)}°।' if hindi else f'Measured peak {int(peak)}°.')
     if ctx.get('source') == 'simulation':
-        note = ' यह सिमुलेशन है, लाइव कैमरा नहीं।' if hindi else ' This is a labelled simulation, not a live camera.'
-    else:
-        note = ''
-    if hindi:
-        return 'मैं रिहैबएआई हूँ। यह निदान नहीं है। गाइड आर्म की नकल करें और धड़ सीधा रखें।' + note
-    return 'I am RehabAI. This is not a diagnosis. Copy the guide arm and keep your trunk quiet.' + note
+        bits.append('सिमुलेशन।' if hindi else 'Labelled simulation.')
+    return ' '.join(bits)[:280]
 
 
 def _wants_end(text: str) -> bool:

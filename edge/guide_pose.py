@@ -29,6 +29,7 @@ def build_guide(spec, side, sample, safety, target):
         'role': 'exercise_guide',
         'side': side,
         'movement': movement,
+        'target_deg': round(float(target or 0), 1),
         'guide_arm_deg': round(demo, 1),
         'guide_torso_deg': 0.0,
         'patient_arm_deg': round(patient_arm, 1),
